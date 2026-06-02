@@ -89,3 +89,5 @@ mini-services/excel-service/.venv-lock/
 /skills/db/main_db.sqlite
 upload/main_db.sqlite
 upload/calendar_db.sqlite
+db/*.sqlite
+upload/*.sqlite
