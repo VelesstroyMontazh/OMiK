@@ -13,7 +13,8 @@ from datetime import datetime
 import pandas as pd
 import numpy as np
 
-UPLOAD_DIR = "/home/z/my-project/upload/"
+from data_paths import UPLOAD_DIR
+
 CALENDAR_DB_PATH = os.path.join(UPLOAD_DIR, "calendar_db.sqlite")
 CALENDAR_META_PATH = os.path.join(UPLOAD_DIR, "calendar_db_meta.json")
 
@@ -453,10 +454,12 @@ def get_calendar_data(
     month: Optional[int] = None,
     citizenship: Optional[str] = None,
     justification: Optional[str] = None,
+    justification_contains: Optional[str] = None,
     arrival_status: Optional[str] = None,
     worker_type: Optional[str] = None,
     department: Optional[str] = None,
-    position: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
     search: Optional[str] = None,
     offset: int = 0,
     limit: int = 200,
@@ -467,46 +470,20 @@ def get_calendar_data(
 
     conn = _get_db_connection()
     try:
-        where_parts = []
-        params = []
-
-        if direction:
-            where_parts.append('direction = ?')
-            params.append(direction)
-        if year:
-            where_parts.append('year = ?')
-            params.append(year)
-        if month:
-            where_parts.append('month = ?')
-            params.append(month)
-        if citizenship:
-            where_parts.append('LOWER(citizenship) LIKE ?')
-            params.append(f'%{citizenship.lower()}%')
-        if justification:
-            where_parts.append('LOWER(justification) LIKE ?')
-            params.append(f'%{justification.lower()}%')
-        if arrival_status:
-            where_parts.append('LOWER(arrival_status) LIKE ?')
-            params.append(f'%{arrival_status.lower()}%')
-        if worker_type:
-            where_parts.append('LOWER(worker_type) LIKE ?')
-            params.append(f'%{worker_type.lower()}%')
-        if department:
-            where_parts.append('LOWER(department) LIKE ?')
-            params.append(f'%{department.lower()}%')
-        if position:
-            where_parts.append('LOWER(position) LIKE ?')
-            params.append(f'%{position.lower()}%')
-        if search:
-            search_lower = search.lower()
-            search_conditions = [
-                'LOWER(full_name) LIKE ?',
-                'LOWER(tab_num) LIKE ?',
-                'LOWER(citizenship) LIKE ?',
-                'LOWER(justification) LIKE ?',
-            ]
-            where_parts.append(f'({" OR ".join(search_conditions)})')
-            params.extend([f'%{search_lower}%'] * len(search_conditions))
+        where_parts, params = build_calendar_filter_clause(
+            direction=direction,
+            year=year,
+            month=month,
+            date_from=date_from,
+            date_to=date_to,
+            citizenship=citizenship,
+            justification=justification,
+            justification_contains=justification_contains,
+            arrival_status=arrival_status,
+            worker_type=worker_type,
+            department=department,
+            search=search,
+        )
 
         where_clause = f'WHERE {" AND ".join(where_parts)}' if where_parts else ''
 
@@ -621,6 +598,123 @@ def get_calendar_stats(
         }
     finally:
         conn.close()
+
+
+def _parse_date_param(value: Optional[str]) -> Optional[str]:
+    """Parse DD.MM.YYYY or YYYY-MM-DD to ISO YYYY-MM-DD."""
+    if not value:
+        return None
+    s = str(value).strip()
+    if not s:
+        return None
+    for fmt in ("%d.%m.%Y", "%Y-%m-%d", "%d/%m/%Y"):
+        try:
+            return datetime.strptime(s[:10] if fmt != "%Y-%m-%d" else s, fmt).strftime("%Y-%m-%d")
+        except ValueError:
+            continue
+    return None
+
+
+def _arrival_date_key_sql() -> str:
+    """Normalize arrival_date text to YYYY-MM-DD when possible."""
+    return (
+        "CASE "
+        "WHEN arrival_date GLOB '????-??-??*' THEN substr(arrival_date, 1, 10) "
+        "WHEN arrival_date GLOB '??.??.????*' THEN "
+        "  substr(arrival_date, 7, 4) || '-' || substr(arrival_date, 4, 2) || '-' || substr(arrival_date, 1, 2) "
+        "ELSE NULL END"
+    )
+
+
+def build_calendar_filter_clause(
+    direction: Optional[str] = None,
+    year: Optional[int] = None,
+    month: Optional[int] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    citizenship: Optional[str] = None,
+    justification: Optional[str] = None,
+    justification_contains: Optional[str] = None,
+    arrival_status: Optional[str] = None,
+    worker_type: Optional[str] = None,
+    department: Optional[str] = None,
+    search: Optional[str] = None,
+) -> tuple[list[str], list[Any]]:
+    where_parts: list[str] = []
+    params: list[Any] = []
+
+    if direction:
+        where_parts.append("direction = ?")
+        params.append(direction)
+    if year:
+        where_parts.append("year = ?")
+        params.append(year)
+    if month:
+        where_parts.append("month = ?")
+        params.append(month)
+
+    iso_from = _parse_date_param(date_from)
+    iso_to = _parse_date_param(date_to)
+    date_key = _arrival_date_key_sql()
+    if iso_from:
+        where_parts.append(f"({date_key}) >= ?")
+        params.append(iso_from)
+    if iso_to:
+        where_parts.append(f"({date_key}) <= ?")
+        params.append(iso_to)
+
+    if citizenship:
+        where_parts.append("LOWER(citizenship) LIKE ?")
+        params.append(f"%{citizenship.lower()}%")
+    if justification_contains:
+        where_parts.append("LOWER(justification) LIKE ?")
+        params.append(f"%{justification_contains.lower()}%")
+    elif justification:
+        where_parts.append("justification = ?")
+        params.append(justification)
+    if arrival_status:
+        where_parts.append("LOWER(arrival_status) LIKE ?")
+        params.append(f"%{arrival_status.lower()}%")
+    if worker_type:
+        where_parts.append("LOWER(worker_type) LIKE ?")
+        params.append(f"%{worker_type.lower()}%")
+    if department:
+        where_parts.append("LOWER(department) LIKE ?")
+        params.append(f"%{department.lower()}%")
+    if search:
+        s = search.lower()
+        where_parts.append(
+            "(LOWER(full_name) LIKE ? OR LOWER(tab_num) LIKE ? OR LOWER(justification) LIKE ?)"
+        )
+        params.extend([f"%{s}%", f"%{s}%", f"%{s}%"])
+
+    return where_parts, params
+
+
+CALENDAR_EXPORT_COLUMNS: Dict[str, str] = {
+    "direction": "Направление",
+    "year": "Год",
+    "month_name": "Месяц",
+    "sheet_name": "Лист",
+    "tab_num": "Таб. №",
+    "full_name": "ФИО",
+    "citizenship": "Гражданство",
+    "passport_series": "Серия паспорта",
+    "passport_number": "Номер паспорта",
+    "organization": "Организация",
+    "department": "Отдел / Участок",
+    "worker_type": "Рабочий/ИТР",
+    "position": "Должность",
+    "justification": "Обоснование",
+    "arrival_status": "Статус прибытия",
+    "arrival_date": "Дата прибытия",
+    "ticket_departure_date": "Дата вылета по билету",
+    "transport_type": "АВИА/ЖД",
+    "ticket_status": "Билет куплен",
+    "ticket_cost": "Сумма билета",
+    "route": "Маршрут",
+    "phone": "Телефон",
+}
 
 
 def get_unique_values(column: str) -> List[str]:

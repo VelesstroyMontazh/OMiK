@@ -1,13 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { proxyBackend } from '@/lib/backend-proxy'
 
-const BACKEND_URL = 'http://localhost:3031'
-
-async function backendFetch(path: string, init?: RequestInit) {
-  const url = `${BACKEND_URL}${path}`
-  const res = await fetch(url, { ...init, signal: AbortSignal.timeout(60000) })
-  const data = await res.json()
-  return NextResponse.json(data, { status: res.status })
-}
+const LOAD_TIMEOUT_MS = 600_000
 
 // GET /api/excel/main-db - Proxy to Python backend main-db endpoints
 export async function GET(request: NextRequest) {
@@ -16,7 +10,7 @@ export async function GET(request: NextRequest) {
 
   switch (action) {
     case 'status':
-      return backendFetch('/api/main-db/status')
+      return proxyBackend('/api/main-db/status')
     case 'data': {
       const offset = searchParams.get('offset') || '0'
       const limit = searchParams.get('limit') || '100'
@@ -33,12 +27,14 @@ export async function GET(request: NextRequest) {
       queryParams += `&key_columns_only=${keyColumnsOnly}`
       if (filtersStr) queryParams += `&filters=${encodeURIComponent(filtersStr)}`
 
-      return backendFetch(`/api/main-db/data?${queryParams}`)
+      return proxyBackend(`/api/main-db/data?${queryParams}`)
     }
     case 'columns':
-      return backendFetch('/api/main-db/columns')
+      return proxyBackend('/api/main-db/columns')
     case 'stats':
-      return backendFetch('/api/main-db/stats')
+      return proxyBackend('/api/main-db/stats')
+    case 'instances':
+      return proxyBackend('/api/main-db/instances')
     default:
       return NextResponse.json({ error: 'Unknown action' }, { status: 400 })
   }
@@ -51,13 +47,24 @@ export async function POST(request: NextRequest) {
 
   switch (action) {
     case 'load':
-      return backendFetch('/api/main-db/load', {
+      return proxyBackend('/api/main-db/load', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ file_path: body.file_path }),
+        body: JSON.stringify({
+          file_path: body.file_path,
+          sheet_name: body.sheet_name,
+          force_reload: Boolean(body.force_reload),
+          set_active: Boolean(body.set_active),
+        }),
+      }, LOAD_TIMEOUT_MS)
+    case 'activate':
+      return proxyBackend('/api/main-db/instances/activate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ instance_id: body.instance_id }),
       })
     case 'search':
-      return backendFetch('/api/main-db/search', {
+      return proxyBackend('/api/main-db/search', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -75,7 +82,13 @@ export async function POST(request: NextRequest) {
   }
 }
 
-// DELETE /api/excel/main-db - Clear main database cache
-export async function DELETE() {
-  return backendFetch('/api/main-db/clear', { method: 'DELETE' })
+// DELETE /api/excel/main-db — clear cache or delete instance (?instance_id=)
+export async function DELETE(request: NextRequest) {
+  const instanceId = new URL(request.url).searchParams.get('instance_id')
+  if (instanceId) {
+    return proxyBackend(`/api/main-db/instances/${encodeURIComponent(instanceId)}`, {
+      method: 'DELETE',
+    })
+  }
+  return proxyBackend('/api/main-db/clear', { method: 'DELETE' })
 }

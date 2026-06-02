@@ -13,49 +13,24 @@ import openpyxl
 from openpyxl.utils import get_column_letter, column_index_from_string
 from openpyxl.utils.cell import coordinate_from_string
 import xlrd
-import xlsxwriter
 import pandas as pd
 import numpy as np
 
-# Optional imports - these may not all be available
-try:
-    import polars as pl
-    HAS_POLARS = True
-except ImportError:
-    HAS_POLARS = False
-
-try:
-    import pylightxl
-    HAS_PYLIGHTXL = True
-except ImportError:
-    HAS_PYLIGHTXL = False
-
-try:
-    import pyxlsb
-    HAS_PYXLSB = True
-except ImportError:
-    HAS_PYXLSB = False
-
-try:
-    import xlwt
-    HAS_XLWT = True
-except ImportError:
-    HAS_XLWT = False
-
-try:
-    import pyexcel
-    HAS_PYEXCEL = True
-except ImportError:
-    HAS_PYEXCEL = False
-
-try:
-    import pyexcelerate
-    HAS_PYEXCELERATE = True
-except ImportError:
-    HAS_PYEXCELERATE = False
-
-
-UPLOAD_DIR = "/home/z/my-project/upload/"
+import excel_libs
+from excel_libs import (
+    HAS_POLARS,
+    HAS_PYXLSB,
+    HAS_XLUTILS,
+    HAS_XLWT,
+    HAS_PYEXCELERATE,
+    PREVIEW_MAX_ROWS,
+    get_library_status,
+    get_sheet_names_universal,
+    read_dataframe,
+    read_sheet_preview_pandas,
+    write_dataframe,
+)
+from data_paths import PROJECT_ROOT, UPLOAD_DIR, migrate_legacy_upload_dir
 
 
 def ensure_upload_dir():
@@ -91,7 +66,11 @@ def save_uploaded_file(file_content: bytes, original_filename: str) -> Dict[str,
         f.write(file_content)
 
     file_size = os.path.getsize(file_path)
-    sheets = get_sheet_names(file_path)
+    # Крупные xlsm: только сохранить файл; листы — при загрузке в реестр
+    if file_size > 12 * 1024 * 1024:
+        sheets: List[str] = []
+    else:
+        sheets = get_sheet_names(file_path)
 
     return {
         "file_id": file_id,
@@ -105,8 +84,20 @@ def save_uploaded_file(file_content: bytes, original_filename: str) -> Dict[str,
     }
 
 
+def get_excel_libraries() -> Dict[str, Any]:
+    """Статус подключённых Excel-библиотек (для health/UI)."""
+    return get_library_status()
+
+
 def get_sheet_names(file_path: str) -> List[str]:
     """Get list of sheet names from an Excel file."""
+    try:
+        names = get_sheet_names_universal(file_path)
+        if names:
+            return names
+    except Exception:
+        pass
+
     ext = os.path.splitext(file_path)[1].lower()
 
     try:
@@ -163,7 +154,12 @@ def _read_xlsx(
     cell_range: Optional[str] = None,
     max_rows: int = 10000
 ) -> Dict[str, Any]:
-    """Read data from .xlsx/.xlsm file using openpyxl."""
+    """Read data from .xlsx/.xlsm — pandas nrows для превью, иначе openpyxl."""
+    if not cell_range and max_rows <= PREVIEW_MAX_ROWS:
+        preview = read_sheet_preview_pandas(file_path, sheet_name, max_rows)
+        if preview is not None:
+            return preview
+
     wb = openpyxl.load_workbook(file_path, read_only=True, data_only=True)
 
     if sheet_name not in wb.sheetnames:
@@ -546,46 +542,60 @@ def create_new_workbook(file_path: str, sheet_name: str = "Sheet1") -> str:
 
 
 def convert_file(input_path: str, output_format: str) -> Dict[str, Any]:
-    """Convert between Excel formats."""
+    """Convert between Excel formats (pandas/openpyxl/xlrd/xlutils)."""
     ext = os.path.splitext(input_path)[1].lower()
     base_name = os.path.splitext(input_path)[0]
     output_path = f"{base_name}_converted.{output_format}"
+    engine_used = "pandas"
 
-    # Read source data
-    if ext == '.csv':
-        df = pd.read_csv(input_path)
-    elif ext in ['.xlsx', '.xlsm']:
-        df = pd.read_excel(input_path, engine='openpyxl')
-    elif ext == '.xls':
-        df = pd.read_excel(input_path, engine='xlrd')
-    elif ext == '.xlsb' and HAS_PYXLSB:
-        # pyxlsb doesn't integrate with pandas directly in all versions
-        # Use pyexcel if available
-        if HAS_PYEXCEL:
-            df = pd.read_excel(input_path, engine='pyxlsb')
-        else:
-            raise ImportError("No suitable engine for .xlsb conversion")
-    else:
-        raise ValueError(f"Cannot convert from {ext}")
+    if ext == ".xls" and output_format == "xls" and HAS_XLUTILS:
+        try:
+            meta = excel_libs.copy_xls_with_xlutils(input_path, output_path)
+            return {
+                "input_path": input_path,
+                "output_path": output_path,
+                "output_format": output_format,
+                "engine": meta.get("engine", "xlutils"),
+            }
+        except Exception:
+            pass
 
-    # Write to target format
-    if output_format == 'xlsx':
-        df.to_excel(output_path, index=False, engine='openpyxl')
-    elif output_format == 'xls':
+    df = read_dataframe(input_path)
+
+    if output_format == "xlsx":
+        wr = write_dataframe(df, output_path)
+        engine_used = wr.get("engine", "openpyxl")
+    elif output_format == "xls":
         if HAS_XLWT:
-            df.to_excel(output_path, index=False, engine='xlwt')
+            df.to_excel(output_path, index=False, engine="xlwt")
+            engine_used = "xlwt"
         else:
             raise ImportError("xlwt not available for .xls output")
-    elif output_format == 'csv':
+    elif output_format == "csv":
         df.to_csv(output_path, index=False)
-    elif output_format == 'tsv':
-        df.to_csv(output_path, index=False, sep='\t')
-    elif output_format == 'json':
-        df.to_json(output_path, orient='records', indent=2)
-    elif output_format == 'parquet':
-        df.to_parquet(output_path, index=False)
-    elif output_format == 'html':
+        engine_used = "pandas"
+    elif output_format == "tsv":
+        df.to_csv(output_path, index=False, sep="\t")
+        engine_used = "pandas"
+    elif output_format == "json":
+        df.to_json(output_path, orient="records", indent=2)
+        engine_used = "pandas"
+    elif output_format == "parquet":
+        try:
+            if HAS_POLARS:
+                import polars as pl
+
+                pl.from_pandas(df).write_parquet(output_path)
+                engine_used = "polars"
+            else:
+                df.to_parquet(output_path, index=False)
+                engine_used = "pandas"
+        except Exception:
+            df.to_parquet(output_path, index=False)
+            engine_used = "pandas"
+    elif output_format == "html":
         df.to_html(output_path, index=False)
+        engine_used = "pandas"
     else:
         raise ValueError(f"Unsupported output format: {output_format}")
 
@@ -595,11 +605,15 @@ def convert_file(input_path: str, output_format: str) -> Dict[str, Any]:
         "output_format": output_format,
         "rows": len(df),
         "columns": len(df.columns),
+        "engine": engine_used,
     }
 
 
-def list_uploaded_files() -> List[Dict[str, Any]]:
-    """List all files in the upload directory."""
+def list_uploaded_files(*, include_sheets: bool = False) -> List[Dict[str, Any]]:
+    """List all files in the upload directory.
+
+    include_sheets=False by default — reading sheet names from 18+ large xlsm blocks the server for minutes.
+    """
     ensure_upload_dir()
     files = []
 
@@ -618,11 +632,13 @@ def list_uploaded_files() -> List[Dict[str, Any]]:
                 "modified": datetime.fromtimestamp(stat.st_mtime).isoformat(),
             }
 
-            if is_excel_file(filename):
+            if include_sheets and is_excel_file(filename):
                 try:
                     file_info["sheets"] = get_sheet_names(file_path)
                 except Exception:
                     file_info["sheets"] = []
+            else:
+                file_info["sheets"] = []
 
             files.append(file_info)
 

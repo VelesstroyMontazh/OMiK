@@ -1,4 +1,4 @@
-@import "tailwindcss";
+@import "tailwindcss" source("..");
 @import "tw-animate-css";
 
 @custom-variant dark (&:is(.dark *));
@@ -44,6 +44,8 @@
 }
 
 :root {
+  --font-geist-sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-geist-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Courier New", monospace;
   --radius: 0.625rem;
   --background: oklch(1 0 0);
   --foreground: oklch(0.145 0 0);
@@ -119,4 +121,254 @@
   body {
     @apply bg-background text-foreground;
   }
+}
+
+/* Ежедневный учёт — вертикальная полоса справа, горизонтальная закреплена внизу блока таблицы */
+.daily-scroll-v {
+  overflow-x: hidden;
+  overflow-y: scroll;
+  -ms-overflow-style: scrollbar;
+  scrollbar-gutter: stable;
+  scrollbar-width: auto;
+  scrollbar-color: #64748b #e2e8f0;
+}
+
+.daily-scroll-v::-webkit-scrollbar {
+  width: 14px;
+  height: 14px;
+}
+
+.daily-scroll-h-bar {
+  overflow-x: scroll;
+  overflow-y: hidden;
+  height: 14px;
+  -ms-overflow-style: scrollbar;
+  scrollbar-width: auto;
+  scrollbar-color: #64748b #e2e8f0;
+  border-top: 1px solid #cbd5e1;
+  background: #e2e8f0;
+}
+
+.daily-scroll-h-bar::-webkit-scrollbar {
+  width: 14px;
+  height: 14px;
+}
+
+.daily-scroll-v::-webkit-scrollbar-track,
+.daily-scroll-h-bar::-webkit-scrollbar-track {
+  background: #e2e8f0;
+}
+
+.daily-scroll-v::-webkit-scrollbar-thumb,
+.daily-scroll-h-bar::-webkit-scrollbar-thumb {
+  background: #64748b;
+  border-radius: 8px;
+  border: 3px solid #e2e8f0;
+}
+
+.daily-scroll-inner {
+  display: inline-block;
+  min-width: calc(100% + 1px);
+  width: max-content;
+  vertical-align: top;
+}
+
+/* Ежедневный учёт — вертикальная полоса справа, горизонтальная закреплена внизу блока таблицы */
+.daily-scroll-v {
+  overflow-x: hidden;
+  overflow-y: scroll;
+  -ms-overflow-style: scrollbar;
+  scrollbar-gutter: stable;
+  scrollbar-width: auto;
+  scrollbar-color: #64748b #e2e8f0;
+}
+
+.daily-scroll-v::-webkit-scrollbar {
+  width: 14px;
+  height: 14px;
+}
+
+.daily-scroll-h-bar {
+  overflow-x: scroll;
+  overflow-y: hidden;
+  height: 14px;
+  -ms-overflow-style: scrollbar;
+  scrollbar-width: auto;
+  scrollbar-color: #64748b #e2e8f0;
+  border-top: 1px solid #cbd5e1;
+  background: #e2e8f0;
+}
+
+.daily-scroll-h-bar::-webkit-scrollbar {
+  width: 14px;
+  height: 14px;
+}
+
+.daily-scroll-v::-webkit-scrollbar-track,
+.daily-scroll-h-bar::-webkit-scrollbar-track {
+  background: #e2e8f0;
+}
+
+.daily-scroll-v::-webkit-scrollbar-thumb,
+.daily-scroll-h-bar::-webkit-scrollbar-thumb {
+  background: #64748b;
+  border-radius: 8px;
+  border: 3px solid #e2e8f0;
+}
+
+.daily-scroll-inner {
+  display: inline-block;
+  min-width: calc(100% + 1px);
+  width: max-content;
+  vertical-align: top;
+}
+
+/* Ежедневный учёт — вертикальная полоса справа, горизонтальная закреплена внизу блока таблицы */
+.daily-scroll-v {
+  overflow-x: hidden;
+  overflow-y: scroll;
+  -ms-overflow-style: scrollbar;
+  scrollbar-gutter: stable;
+  scrollbar-width: auto;
+  scrollbar-color: #64748b #e2e8f0;
+}
+
+.daily-scroll-v::-webkit-scrollbar {
+  width: 14px;
+  height: 14px;
+}
+
+.daily-scroll-h-bar {
+  overflow-x: scroll;
+  overflow-y: hidden;
+  height: 14px;
+  -ms-overflow-style: scrollbar;
+  scrollbar-width: auto;
+  scrollbar-color: #64748b #e2e8f0;
+  border-top: 1px solid #cbd5e1;
+  background: #e2e8f0;
+}
+
+.daily-scroll-h-bar::-webkit-scrollbar {
+  width: 14px;
+  height: 14px;
+}
+
+.daily-scroll-v::-webkit-scrollbar-track,
+.daily-scroll-h-bar::-webkit-scrollbar-track {
+  background: #e2e8f0;
+}
+
+.daily-scroll-v::-webkit-scrollbar-thumb,
+.daily-scroll-h-bar::-webkit-scrollbar-thumb {
+  background: #64748b;
+  border-radius: 8px;
+  border: 3px solid #e2e8f0;
+}
+
+.daily-scroll-inner {
+  display: inline-block;
+  min-width: calc(100% + 1px);
+  width: max-content;
+  vertical-align: top;
+}
+
+/* Ежедневный учёт — вертикальная полоса справа, горизонтальная закреплена внизу блока таблицы */
+.daily-scroll-v {
+  overflow-x: hidden;
+  overflow-y: scroll;
+  -ms-overflow-style: scrollbar;
+  scrollbar-gutter: stable;
+  scrollbar-width: auto;
+  scrollbar-color: #64748b #e2e8f0;
+}
+
+.daily-scroll-v::-webkit-scrollbar {
+  width: 14px;
+  height: 14px;
+}
+
+.daily-scroll-h-bar {
+  overflow-x: scroll;
+  overflow-y: hidden;
+  height: 14px;
+  -ms-overflow-style: scrollbar;
+  scrollbar-width: auto;
+  scrollbar-color: #64748b #e2e8f0;
+  border-top: 1px solid #cbd5e1;
+  background: #e2e8f0;
+}
+
+.daily-scroll-h-bar::-webkit-scrollbar {
+  width: 14px;
+  height: 14px;
+}
+
+.daily-scroll-v::-webkit-scrollbar-track,
+.daily-scroll-h-bar::-webkit-scrollbar-track {
+  background: #e2e8f0;
+}
+
+.daily-scroll-v::-webkit-scrollbar-thumb,
+.daily-scroll-h-bar::-webkit-scrollbar-thumb {
+  background: #64748b;
+  border-radius: 8px;
+  border: 3px solid #e2e8f0;
+}
+
+.daily-scroll-inner {
+  display: inline-block;
+  min-width: calc(100% + 1px);
+  width: max-content;
+  vertical-align: top;
+}
+
+/* Ежедневный учёт — вертикальная полоса справа, горизонтальная закреплена внизу блока таблицы */
+.daily-scroll-v {
+  overflow-x: hidden;
+  overflow-y: scroll;
+  -ms-overflow-style: scrollbar;
+  scrollbar-gutter: stable;
+  scrollbar-width: auto;
+  scrollbar-color: #64748b #e2e8f0;
+}
+
+.daily-scroll-v::-webkit-scrollbar {
+  width: 14px;
+  height: 14px;
+}
+
+.daily-scroll-h-bar {
+  overflow-x: scroll;
+  overflow-y: hidden;
+  height: 14px;
+  -ms-overflow-style: scrollbar;
+  scrollbar-width: auto;
+  scrollbar-color: #64748b #e2e8f0;
+  border-top: 1px solid #cbd5e1;
+  background: #e2e8f0;
+}
+
+.daily-scroll-h-bar::-webkit-scrollbar {
+  width: 14px;
+  height: 14px;
+}
+
+.daily-scroll-v::-webkit-scrollbar-track,
+.daily-scroll-h-bar::-webkit-scrollbar-track {
+  background: #e2e8f0;
+}
+
+.daily-scroll-v::-webkit-scrollbar-thumb,
+.daily-scroll-h-bar::-webkit-scrollbar-thumb {
+  background: #64748b;
+  border-radius: 8px;
+  border: 3px solid #e2e8f0;
+}
+
+.daily-scroll-inner {
+  display: inline-block;
+  min-width: calc(100% + 1px);
+  width: max-content;
+  vertical-align: top;
 }

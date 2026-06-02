@@ -1,9 +1,21 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { EXCEL_BACKEND_URL } from '@/lib/excel-backend'
+import { errorDetail, fetchFromExcelBackend } from '@/lib/backend-proxy'
+import { ensureExcelBackendServer } from '@/lib/ensure-excel-backend'
 import { db } from '@/lib/db'
+
+/** Крупные .xlsm (18+ MB) — до 10 мин на файл */
+export const maxDuration = 600
+
+const UPLOAD_TIMEOUT_MS = 600_000
 
 export async function POST(request: NextRequest) {
   try {
+    const ensured = await ensureExcelBackendServer(45_000)
+    if (ensured.status !== 'ok' && ensured.status !== 'busy') {
+      const msg = ensured.detail || 'Excel-service не запущен на :3031'
+      return NextResponse.json({ error: msg, detail: msg }, { status: 503 })
+    }
+
     const formData = await request.formData()
     const file = formData.get('file') as File | null
 
@@ -11,57 +23,65 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'No file provided' }, { status: 400 })
     }
 
-    // Forward the file to the Python backend
     const backendForm = new FormData()
     backendForm.append('file', file)
 
-    const response = await fetch(`${EXCEL_BACKEND_URL}/api/upload`, {
-      method: 'POST',
-      body: backendForm,
-    })
+    const response = await fetchFromExcelBackend(
+      '/api/upload',
+      {
+        method: 'POST',
+        body: backendForm,
+      },
+      UPLOAD_TIMEOUT_MS,
+    )
 
     if (!response.ok) {
       let errorMessage = response.statusText
       try {
-        const body = await response.json()
-        if (body.detail) {
-          errorMessage = typeof body.detail === 'string' ? body.detail : JSON.stringify(body.detail)
+        const body = (await response.json()) as { detail?: unknown; error?: unknown }
+        const raw = body.detail ?? body.error
+        if (raw) {
+          errorMessage =
+            typeof raw === 'string' ? raw : JSON.stringify(raw)
         }
       } catch {
         // ignore
       }
       return NextResponse.json(
-        { error: `Backend error (${response.status}): ${errorMessage}` },
-        { status: response.status }
+        { error: errorMessage, detail: errorMessage },
+        { status: response.status },
       )
     }
 
-    const data = await response.json()
+    const data = (await response.json()) as {
+      stored_filename?: string
+      file_path?: string
+      file_size?: number
+      sheets?: unknown[]
+      file_id?: string
+      original_filename?: string
+    }
 
-    // Save file metadata to the Prisma database
     try {
       await db.excelFile.create({
         data: {
           name: data.stored_filename || file.name,
           originalName: file.name,
           path: data.file_path || '',
-          size: data.file_size || 0,
-          sheetCount: data.sheets?.length || 0,
+          size: data.file_size || file.size,
+          sheetCount: Array.isArray(data.sheets) ? data.sheets.length : 0,
           isActive: false,
           description: '',
         },
       })
     } catch (dbError) {
       console.error('Failed to save file metadata to database:', dbError)
-      // Non-fatal: we still return the backend response even if DB save fails
     }
 
     return NextResponse.json(data)
   } catch (error) {
     console.error('Upload error:', error)
-    return NextResponse.json(
-      { error: error instanceof Error ? error.message : 'Unknown error' },
-      { status: 500 }
-    )
+    const message = errorDetail(error, UPLOAD_TIMEOUT_MS)
+    return NextResponse.json({ error: message, detail: message }, { status: 500 })
   }
 }

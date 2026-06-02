@@ -1,0 +1,12 @@
+#!/usr/bin/env sh
+set -e
+cd "$(dirname "$0")/.." || exit 1
+
+echo "[pre-commit] typecheck..."
+bun run typecheck
+
+echo "[pre-commit] lint (staged TS/TSX)..."
+bunx lint-staged
+
+echo "[pre-commit] unit tests..."
+bun run test:unit

@@ -1,16 +1,20 @@
-import { spawn } from "child_process";
+import { spawn } from 'child_process'
+import { dirname, join } from 'path'
+import { fileURLToPath } from 'url'
 
-const pythonProcess = spawn("python3", ["app.py"], {
-  cwd: import.meta.dir,
-  stdio: "inherit",
-  env: { ...process.env, PORT: "3031" }
-});
+const serviceDir = dirname(fileURLToPath(import.meta.url))
 
-pythonProcess.on("error", (err) => {
-  console.error("Failed to start Python service:", err);
-});
+const pythonProcess = spawn('python', ['app.py'], {
+  cwd: serviceDir,
+  stdio: 'inherit',
+  env: { ...process.env, PORT: '3031' },
+})
 
-process.on("SIGTERM", () => {
-  pythonProcess.kill();
-  process.exit(0);
-});
+pythonProcess.on('error', (err) => {
+  console.error('Failed to start Python service:', err)
+})
+
+process.on('SIGTERM', () => {
+  pythonProcess.kill()
+  process.exit(0)
+})

@@ -9,12 +9,18 @@ export interface MainDbColumn {
 export interface MainDbStatus {
   loaded: boolean
   file_path: string | null
+  source_excel?: string | null
   sheet_name: string | null
   columns: string[]
   key_columns: string[]
   row_count: number
   col_count: number
   loaded_at: string | null
+  detected_excel?: string | null
+  upload_dir?: string | null
+  data_dir?: string | null
+  message?: string | null
+  error?: string | null
 }
 
 export interface MainDbFilters {

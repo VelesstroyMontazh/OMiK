@@ -76,6 +76,8 @@ export interface Macro {
 interface ExcelState {
   // File state
   activeFile: FileInfo | null
+  /** Предыдущие экраны (модули / файлы) для кнопки «Назад». */
+  navHistory: FileInfo[]
   files: FileInfo[]
   currentFilePath: string | null
 
@@ -121,6 +123,12 @@ interface ExcelState {
 
   // Actions
   setActiveFile: (file: FileInfo | null) => void
+  /** Открыть экран с запоминанием текущего в истории. */
+  navigateTo: (file: FileInfo | null) => void
+  /** Вернуться на предыдущий экран (или на главную, если история пуста). */
+  goBack: () => void
+  /** Сохранить текущий экран в истории перед сменой состояния (редактор таблицы). */
+  pushNavHistory: () => void
   setFiles: (files: FileInfo[]) => void
   setCurrentFilePath: (path: string | null) => void
   setIsLoading: (loading: boolean) => void
@@ -215,6 +223,7 @@ export function cellRef(row: number, col: number): string {
 export const useExcelStore = create<ExcelState>((set, get) => ({
   // File state
   activeFile: null,
+  navHistory: [],
   files: [],
   currentFilePath: null,
 
@@ -260,6 +269,32 @@ export const useExcelStore = create<ExcelState>((set, get) => ({
 
   // Actions
   setActiveFile: (file) => set({ activeFile: file }),
+  navigateTo: (file) => {
+    const { activeFile, navHistory } = get()
+    if (activeFile?.id === file?.id) return
+    set({
+      activeFile: file,
+      navHistory: activeFile != null ? [...navHistory, activeFile] : navHistory,
+    })
+  },
+  goBack: () => {
+    const { navHistory } = get()
+    if (navHistory.length === 0) {
+      set({ activeFile: null })
+      return
+    }
+    const prev = navHistory[navHistory.length - 1]!
+    set({
+      activeFile: prev,
+      navHistory: navHistory.slice(0, -1),
+    })
+  },
+  pushNavHistory: () => {
+    const { activeFile, navHistory } = get()
+    if (!activeFile) return
+    if (navHistory[navHistory.length - 1]?.id === activeFile.id) return
+    set({ navHistory: [...navHistory, activeFile] })
+  },
   setFiles: (files) => set({ files }),
   setCurrentFilePath: (path) => set({ currentFilePath: path }),
   setIsLoading: (loading) => set({ isLoading: loading }),
@@ -797,6 +832,7 @@ export const useExcelStore = create<ExcelState>((set, get) => ({
   resetToEmpty: () =>
     set({
       activeFile: null,
+      navHistory: [],
       currentFilePath: null,
       sheets: [createEmptySheet('Лист1')],
       activeSheetIndex: 0,

@@ -1,0 +1,5 @@
+# Опционально: только если нужен Celery + Redis (OMIK_USE_CELERY=1).
+# По умолчанию достаточно requirements.txt — очередь in-process, без Redis и Docker.
+-r requirements.txt
+celery[redis]>=5.4.0,<6.0
+redis>=5.0.0,<6.0

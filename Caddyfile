@@ -1,4 +1,5 @@
-:81 {
+# Только localhost — не слушать LAN (см. docs/LOCAL_SETUP.md)
+http://127.0.0.1:81 {
 	@transform_port_query {
 		query XTransformPort=*
 	}
@@ -13,7 +14,7 @@
 	}
 
 	handle {
-		reverse_proxy localhost:3000 {
+		reverse_proxy 127.0.0.1:3000 {
 			header_up Host {host}
 			header_up X-Forwarded-For {remote_host}
 			header_up X-Forwarded-Proto {scheme}

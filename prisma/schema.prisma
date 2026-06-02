@@ -58,6 +58,11 @@ model Operation {
   createdAt DateTime  @default(now())
 }
 
+// Legacy/unused: real main DB lives in Python SQLite (main_db.py). See docs/DATA_LAYER.md
+// Legacy/unused: real main DB lives in Python SQLite (main_db.py). See docs/DATA_LAYER.md
+// Legacy/unused: real main DB lives in Python SQLite (main_db.py). See docs/DATA_LAYER.md
+// Legacy/unused: real main DB lives in Python SQLite (main_db.py). See docs/DATA_LAYER.md
+// Legacy/unused: real main DB lives in Python SQLite (main_db.py). See docs/DATA_LAYER.md
 model MainDatabase {
   id           String   @id @default(cuid())
   name         String   @default("Основная БД")

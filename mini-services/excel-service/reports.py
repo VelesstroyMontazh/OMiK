@@ -5,16 +5,24 @@ Reporting Engine - Generates various statistical reports from Main DB and Calend
 import os
 import sqlite3
 import json
+import uuid
 from typing import Optional, Dict, Any, List
-from datetime import datetime
+from datetime import datetime, date, timedelta
 
 import pandas as pd
 import numpy as np
+from openpyxl import Workbook
+from openpyxl.styles import Alignment, Font, PatternFill
 
-UPLOAD_DIR = "/home/z/my-project/upload/"
-MAIN_DB_PATH = os.path.join(UPLOAD_DIR, "main_db.sqlite")
+from calendar_db import CALENDAR_EXPORT_COLUMNS
+
+from calendar_db import CALENDAR_EXPORT_COLUMNS
+from data_paths import UPLOAD_DIR
+import main_db
+
+MAIN_DB_PATH = main_db.DB_PATH
+MAIN_META_PATH = main_db.META_PATH
 CALENDAR_DB_PATH = os.path.join(UPLOAD_DIR, "calendar_db.sqlite")
-MAIN_META_PATH = os.path.join(UPLOAD_DIR, "main_db_meta.json")
 
 
 def _safe_int(val, default=None):
@@ -73,7 +81,7 @@ def report_employment_by_period(
         dismissal_col = col_mapping.get("Дата увольнения", "Дата_увольнения")
         status_col = col_mapping.get("Состояние", "Состояние")
         citizenship_col = col_mapping.get("Страна гражданства", "Страна_гражданства")
-        territory_col = col_mapping.get("Территория", "Территория")
+        territory_col = col_mapping.get("Площадка") or col_mapping.get("Итого") or col_mapping.get("Территория", "Территория")
         org_col = col_mapping.get("Организация", "Организация")
 
         # Build WHERE clause
@@ -225,7 +233,7 @@ def report_dismissal_by_period(
         col_mapping = _load_col_mapping()
         dismissal_col = col_mapping.get("Дата увольнения", "Дата_увольнения")
         citizenship_col = col_mapping.get("Страна гражданства", "Страна_гражданства")
-        territory_col = col_mapping.get("Территория", "Территория")
+        territory_col = col_mapping.get("Площадка") or col_mapping.get("Итого") or col_mapping.get("Территория", "Территория")
         org_col = col_mapping.get("Организация", "Организация")
         status_col = col_mapping.get("Состояние", "Состояние")
 
@@ -378,7 +386,7 @@ def report_current_composition(
         col_mapping = _load_col_mapping()
         status_col = col_mapping.get("Состояние", "Состояние")
         citizenship_col = col_mapping.get("Страна гражданства", "Страна_гражданства")
-        territory_col = col_mapping.get("Территория", "Территория")
+        territory_col = col_mapping.get("Площадка") or col_mapping.get("Итого") or col_mapping.get("Территория", "Территория")
         org_col = col_mapping.get("Организация", "Организация")
         dept_col = col_mapping.get("Подразделение", "Подразделение")
         pos_col = col_mapping.get("Должность", "Должность")
@@ -480,92 +488,360 @@ def report_calendar_summary(
     month: Optional[int] = None,
     citizenship: Optional[str] = None,
     justification: Optional[str] = None,
+    justification_contains: Optional[str] = None,
     arrival_status: Optional[str] = None,
+    worker_type: Optional[str] = None,
+    department: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Generate calendar report (Прилет/Вылет) with filters."""
-    from calendar_db import get_calendar_stats, is_loaded as cal_loaded
+    from calendar_db import is_loaded as cal_loaded, build_calendar_filter_clause
 
     if not cal_loaded():
         return {"error": "Calendar database not loaded. Please load the calendar file first."}
 
-    stats = get_calendar_stats(
-        direction=direction,
-        year=year,
-        month=month,
-    )
-
-    # Add additional filtered queries
     conn = _get_calendar_db_conn()
     if conn is None:
-        return stats
+        return {"error": "Calendar database not found"}
 
     try:
-        where_parts = []
-        params = []
-
-        if direction:
-            where_parts.append('direction = ?')
-            params.append(direction)
-        if year:
-            where_parts.append('year = ?')
-            params.append(year)
-        if month:
-            where_parts.append('month = ?')
-            params.append(month)
-        if citizenship:
-            where_parts.append('LOWER(citizenship) LIKE ?')
-            params.append(f'%{citizenship.lower()}%')
-        if justification:
-            where_parts.append('LOWER(justification) LIKE ?')
-            params.append(f'%{justification.lower()}%')
-        if arrival_status:
-            where_parts.append('LOWER(arrival_status) LIKE ?')
-            params.append(f'%{arrival_status.lower()}%')
-
+        where_parts, params = build_calendar_filter_clause(
+            direction=direction,
+            year=year,
+            month=month,
+            date_from=date_from,
+            date_to=date_to,
+            citizenship=citizenship,
+            justification=justification,
+            justification_contains=justification_contains,
+            arrival_status=arrival_status,
+            worker_type=worker_type,
+            department=department,
+        )
         where_clause = f'WHERE {" AND ".join(where_parts)}' if where_parts else ''
 
         total = conn.execute(f'SELECT COUNT(*) FROM calendar_records {where_clause}', params).fetchone()[0]
 
-        # By justification for filtered data
         by_justification = conn.execute(
-            f'SELECT justification, COUNT(*) as cnt FROM calendar_records {where_clause} GROUP BY justification ORDER BY cnt DESC',
-            params
+            f'SELECT justification, COUNT(*) as cnt FROM calendar_records {where_clause} '
+            f'GROUP BY justification ORDER BY cnt DESC LIMIT 30',
+            params,
         ).fetchall()
 
-        # By citizenship for filtered data
         by_citizenship = conn.execute(
-            f'SELECT citizenship, COUNT(*) as cnt FROM calendar_records {where_clause} GROUP BY citizenship ORDER BY cnt DESC',
-            params
+            f'SELECT citizenship, COUNT(*) as cnt FROM calendar_records {where_clause} '
+            f'GROUP BY citizenship ORDER BY cnt DESC LIMIT 20',
+            params,
         ).fetchall()
 
-        # By arrival status for filtered data
         by_arrival_status = conn.execute(
-            f'SELECT arrival_status, COUNT(*) as cnt FROM calendar_records {where_clause} GROUP BY arrival_status ORDER BY cnt DESC',
-            params
+            f'SELECT arrival_status, COUNT(*) as cnt FROM calendar_records {where_clause} '
+            f'GROUP BY arrival_status ORDER BY cnt DESC',
+            params,
         ).fetchall()
 
-        # Monthly breakdown
         by_month = conn.execute(
-            f'SELECT year, month, direction, COUNT(*) as cnt FROM calendar_records {where_clause} GROUP BY year, month, direction ORDER BY year, month',
-            params
+            f'SELECT year, month, direction, COUNT(*) as cnt FROM calendar_records {where_clause} '
+            f'GROUP BY year, month, direction ORDER BY year, month',
+            params,
         ).fetchall()
+
+        by_department = conn.execute(
+            f'SELECT department, COUNT(*) as cnt FROM calendar_records {where_clause} '
+            f'GROUP BY department ORDER BY cnt DESC LIMIT 20',
+            params,
+        ).fetchall()
+
+        title_parts = ["Календарь"]
+        if direction:
+            title_parts.append(direction)
+        if justification:
+            title_parts.append(f"— {justification}")
+        elif justification_contains:
+            title_parts.append(f"— обоснование «{justification_contains}»")
+        if date_from or date_to:
+            title_parts.append(f"({date_from or '…'} — {date_to or '…'})")
 
         return {
             "report_type": "calendar_summary",
-            "title": f"Календарь {'Прилет' if direction == 'Прилет' else 'Вылет' if direction == 'Вылет' else 'Прилет/Вылет'}",
+            "title": " ".join(title_parts),
             "total": total,
             "by_justification": [{"name": r[0] or "Не указано", "count": r[1]} for r in by_justification],
             "by_citizenship": [{"name": r[0] or "Не указано", "count": r[1]} for r in by_citizenship],
             "by_arrival_status": [{"name": r[0] or "Не указано", "count": r[1]} for r in by_arrival_status],
             "by_month": [{"year": r[0], "month": r[1], "direction": r[2], "count": r[3]} for r in by_month],
+            "by_department": [{"name": r[0] or "Не указано", "count": r[1]} for r in by_department],
             "filters_applied": {
                 "direction": direction,
                 "year": year,
                 "month": month,
+                "date_from": date_from,
+                "date_to": date_to,
                 "citizenship": citizenship,
                 "justification": justification,
+                "justification_contains": justification_contains,
                 "arrival_status": arrival_status,
-            }
+                "worker_type": worker_type,
+                "department": department,
+            },
+        }
+    finally:
+        conn.close()
+
+
+def report_calendar_conditional(
+    direction: Optional[str] = None,
+    year: Optional[int] = None,
+    month: Optional[int] = None,
+    citizenship: Optional[str] = None,
+    justification: Optional[str] = None,
+    justification_contains: Optional[str] = None,
+    arrival_status: Optional[str] = None,
+    worker_type: Optional[str] = None,
+    department: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    output_name: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Conditional calendar report with Excel export and in-app preview."""
+    from calendar_db import (
+        is_loaded as cal_loaded,
+        build_calendar_filter_clause,
+        CALENDAR_EXPORT_COLUMNS,
+    )
+    import excel_handler
+
+    if not cal_loaded():
+        return {"error": "Календарь не загружен. Сначала загрузите файл календаря."}
+
+    summary = report_calendar_summary(
+        direction=direction,
+        year=year,
+        month=month,
+        citizenship=citizenship,
+        justification=justification,
+        justification_contains=justification_contains,
+        arrival_status=arrival_status,
+        worker_type=worker_type,
+        department=department,
+        date_from=date_from,
+        date_to=date_to,
+    )
+    if "error" in summary:
+        return summary
+
+    conn = _get_calendar_db_conn()
+    if conn is None:
+        return {"error": "Calendar database not found"}
+
+    try:
+        where_parts, params = build_calendar_filter_clause(
+            direction=direction,
+            year=year,
+            month=month,
+            date_from=date_from,
+            date_to=date_to,
+            citizenship=citizenship,
+            justification=justification,
+            justification_contains=justification_contains,
+            arrival_status=arrival_status,
+            worker_type=worker_type,
+            department=department,
+        )
+        where_clause = f'WHERE {" AND ".join(where_parts)}' if where_parts else ''
+
+        export_cols = list(CALENDAR_EXPORT_COLUMNS.keys())
+        col_sql = ", ".join(export_cols)
+        query = (
+            f"SELECT {col_sql} FROM calendar_records {where_clause} "
+            f"ORDER BY year, month, row_number"
+        )
+        df = pd.read_sql_query(query, conn, params=params)
+
+        preview_limit = 200
+        preview_rows = df.head(preview_limit).to_dict(orient="records")
+
+        excel_handler.ensure_upload_dir()
+        base_name = output_name.strip() if output_name else (
+            f"calendar_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+        )
+        if not base_name.lower().endswith(".xlsx"):
+            base_name = f"{base_name}.xlsx"
+        stored_filename = f"{uuid.uuid4()}_{base_name}"
+        output_path = os.path.join(UPLOAD_DIR, stored_filename)
+
+        export_df = df.rename(columns=CALENDAR_EXPORT_COLUMNS)
+        summary_rows = [
+            ("Показатель", "Значение"),
+            ("Всего записей", summary["total"]),
+            ("Направление", direction or "Все"),
+            ("Год", year or "Все"),
+            ("Месяц", month or "Все"),
+            ("Дата с", date_from or "—"),
+            ("Дата по", date_to or "—"),
+            ("Обоснование (точное)", justification or "—"),
+            ("Обоснование (содержит)", justification_contains or "—"),
+            ("Гражданство", citizenship or "—"),
+            ("Статус прибытия", arrival_status or "—"),
+            ("Рабочий/ИТР", worker_type or "—"),
+            ("Отдел", department or "—"),
+        ]
+
+        with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
+            export_df.to_excel(writer, sheet_name="Данные", index=False)
+            pd.DataFrame(summary_rows[1:], columns=summary_rows[0]).to_excel(
+                writer, sheet_name="Сводка", index=False
+            )
+            if summary.get("by_justification"):
+                pd.DataFrame(summary["by_justification"]).to_excel(
+                    writer, sheet_name="По обоснованию", index=False
+                )
+
+        return {
+            **summary,
+            "report_type": "calendar_conditional",
+            "preview_rows": preview_rows,
+            "preview_limit": preview_limit,
+            "file_path": output_path,
+            "stored_filename": stored_filename,
+            "file_id": os.path.splitext(stored_filename)[0],
+        }
+    finally:
+        conn.close()
+
+
+from calendar_db import CALENDAR_EXPORT_COLUMNS
+
+MERGED_EXPORT_COLUMNS: Dict[str, str] = {
+    **CALENDAR_EXPORT_COLUMNS,
+    "Табельный номер (База)": "Табельный номер (База)",
+    "ФИО (База)": "ФИО (База)",
+    "Организация (База)": "Организация (База)",
+    "Подразделение (База)": "Подразделение (База)",
+    "Состояние (База)": "Состояние (База)",
+}
+
+
+def _get_merged_calendar_db_conn():
+    from integration_ops import CALENDAR_MERGED_DB_PATH, is_merged_calendar_loaded
+
+    if not is_merged_calendar_loaded():
+        return None
+    if not os.path.exists(CALENDAR_MERGED_DB_PATH):
+        return None
+    return sqlite3.connect(CALENDAR_MERGED_DB_PATH)
+
+
+def report_calendar_merged_conditional(
+    direction: Optional[str] = None,
+    year: Optional[int] = None,
+    month: Optional[int] = None,
+    citizenship: Optional[str] = None,
+    justification: Optional[str] = None,
+    justification_contains: Optional[str] = None,
+    arrival_status: Optional[str] = None,
+    worker_type: Optional[str] = None,
+    department: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    output_name: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Conditional report on calendar+main merged dataset."""
+    from calendar_db import build_calendar_filter_clause
+    from integration_ops import is_merged_calendar_loaded
+    import excel_handler
+
+    if not is_merged_calendar_loaded():
+        return {
+            "error": "Объединённый календарь не построен. Сначала выполните «Объединить с Базой» на вкладке «Календарь + База».",
+        }
+
+    summary = report_calendar_summary(
+        direction=direction,
+        year=year,
+        month=month,
+        citizenship=citizenship,
+        justification=justification,
+        justification_contains=justification_contains,
+        arrival_status=arrival_status,
+        worker_type=worker_type,
+        department=department,
+        date_from=date_from,
+        date_to=date_to,
+    )
+    if "error" in summary:
+        return summary
+
+    conn = _get_merged_calendar_db_conn()
+    if conn is None:
+        return {"error": "База объединённого календаря не найдена"}
+
+    try:
+        where_parts, params = build_calendar_filter_clause(
+            direction=direction,
+            year=year,
+            month=month,
+            date_from=date_from,
+            date_to=date_to,
+            citizenship=citizenship,
+            justification=justification,
+            justification_contains=justification_contains,
+            arrival_status=arrival_status,
+            worker_type=worker_type,
+            department=department,
+        )
+        where_clause = f'WHERE {" AND ".join(where_parts)}' if where_parts else ''
+
+        export_cols = list(MERGED_EXPORT_COLUMNS.keys())
+        col_sql = ", ".join(f'"{c}"' if " " in c or "(" in c else c for c in export_cols)
+        query = (
+            f"SELECT {col_sql} FROM calendar_merged_records {where_clause} "
+            f"ORDER BY year, month, row_number"
+        )
+        df = pd.read_sql_query(query, conn, params=params)
+
+        matched_base = int(df["Табельный номер (База)"].notna().sum()) if "Табельный номер (База)" in df.columns else 0
+        preview_limit = 200
+        preview_rows = df.head(preview_limit).to_dict(orient="records")
+
+        excel_handler.ensure_upload_dir()
+        base_name = output_name.strip() if output_name else (
+            f"calendar_merged_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+        )
+        if not base_name.lower().endswith(".xlsx"):
+            base_name = f"{base_name}.xlsx"
+        stored_filename = f"{uuid.uuid4()}_{base_name}"
+        output_path = os.path.join(UPLOAD_DIR, stored_filename)
+
+        export_df = df.rename(columns=MERGED_EXPORT_COLUMNS)
+        title = summary.get("title", "Календарь").replace("Календарь", "Календарь + База", 1)
+        summary_rows = [
+            ("Показатель", "Значение"),
+            ("Всего записей", len(df)),
+            ("Сопоставлено с Базой", matched_base),
+            ("Направление", direction or "Все"),
+            ("Год", year or "Все"),
+            ("Месяц", month or "Все"),
+        ]
+
+        with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
+            export_df.to_excel(writer, sheet_name="Данные", index=False)
+            pd.DataFrame(summary_rows[1:], columns=summary_rows[0]).to_excel(
+                writer, sheet_name="Сводка", index=False
+            )
+
+        return {
+            **summary,
+            "title": title,
+            "report_type": "calendar_merged_conditional",
+            "total": int(len(df)),
+            "matched_with_base": matched_base,
+            "preview_rows": preview_rows,
+            "preview_limit": preview_limit,
+            "file_path": output_path,
+            "stored_filename": stored_filename,
+            "file_id": os.path.splitext(stored_filename)[0],
         }
     finally:
         conn.close()
@@ -659,3 +935,205 @@ def get_available_report_filters() -> Dict[str, Any]:
                 conn2.close()
 
     return result
+
+
+def _parse_date_series(series: pd.Series) -> pd.Series:
+    """
+    Parse mixed-format date series.
+    First pass: default parser (ISO friendly)
+    Second pass: day-first parser for unresolved values.
+    """
+    first = pd.to_datetime(series, errors="coerce")
+    need_second = first.isna() & series.notna() & (series.astype(str).str.strip() != "")
+    if need_second.any():
+        second = pd.to_datetime(series[need_second], errors="coerce", dayfirst=True)
+        first.loc[need_second] = second
+    return first
+
+
+def report_base_presence_matrix(
+    start_date_str: Optional[str] = None,
+    end_date_str: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Build custom day-by-day presence matrix report from Main DB.
+
+    Output columns:
+    Табельный номер (с префиксами), ФИО, Страна гражданства, Организация,
+    Подразделение, Территория, Состояние, Дата приема, Дата увольнения,
+    then daily columns from start_date to end_date with formula:
+    =ЕСЛИ(И(J$1>=$H2; ИЛИ($I2=""; J$1<=$I2)); 1; 0)
+    """
+    conn = _get_main_db_conn()
+    if conn is None:
+        return {"error": "Main database not loaded"}
+
+    try:
+        col_mapping = _load_col_mapping()
+        required = [
+            "Табельный номер (с префиксами)",
+            "ФИО",
+            "Страна гражданства",
+            "Организация",
+            "Подразделение",
+            "Территория",
+            "Состояние",
+            "Дата приема",
+            "Дата увольнения",
+        ]
+        sql_cols = [col_mapping.get(c) for c in required]
+        if any(not c for c in sql_cols):
+            return {"error": "Не найдены обязательные столбцы в основной БД"}
+
+        quoted = ", ".join(f'"{c}"' for c in sql_cols)
+        df = pd.read_sql_query(f"SELECT {quoted} FROM employees", conn)
+        df.columns = required
+
+        # Preserve raw strings for audit
+        raw_hire = df["Дата приема"].astype(str).str.strip()
+        raw_fire = df["Дата увольнения"].astype(str).str.strip()
+
+        # Parse dates
+        df["Дата приема"] = _parse_date_series(df["Дата приема"])
+        df["Дата увольнения"] = _parse_date_series(df["Дата увольнения"])
+
+        invalid_hire = int(((raw_hire != "") & df["Дата приема"].isna()).sum())
+        invalid_fire = int(((raw_fire != "") & df["Дата увольнения"].isna()).sum())
+        missing_hire = int(df["Дата приема"].isna().sum())
+
+        fire_before_hire = (
+            df["Дата приема"].notna()
+            & df["Дата увольнения"].notna()
+            & (df["Дата увольнения"] < df["Дата приема"])
+        )
+        fire_before_hire_count = int(fire_before_hire.sum())
+        if fire_before_hire_count > 0:
+            # Keep hire date and clear invalid dismissal date.
+            df.loc[fire_before_hire, "Дата увольнения"] = pd.NaT
+
+        start_date_value = (
+            datetime.strptime(start_date_str, "%d.%m.%Y").date()
+            if start_date_str
+            else date(2025, 1, 1)
+        )
+        end_date_value = (
+            datetime.strptime(end_date_str, "%d.%m.%Y").date()
+            if end_date_str
+            else date.today()
+        )
+        if end_date_value < start_date_value:
+            return {"error": "Дата окончания меньше даты начала"}
+
+        start_ts = pd.Timestamp(start_date_value)
+        end_ts = pd.Timestamp(end_date_value)
+
+        # Keep only rows that intersect the report period
+        relevant_mask = (
+            df["Дата приема"].notna()
+            & (df["Дата приема"] <= end_ts)
+            & (df["Дата увольнения"].isna() | (df["Дата увольнения"] >= start_ts))
+        )
+        report_df = df.loc[relevant_mask].copy()
+
+        # Build date columns
+        day_columns: List[date] = []
+        cursor = start_date_value
+        while cursor <= end_date_value:
+            day_columns.append(cursor)
+            cursor += timedelta(days=1)
+
+        # Write workbook
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Отчет"
+
+        headers = required + day_columns
+        for col_idx, header in enumerate(headers, start=1):
+            cell = ws.cell(row=1, column=col_idx)
+            if isinstance(header, date):
+                cell.value = header
+                cell.number_format = "DD.MM.YYYY"
+                cell.fill = PatternFill("solid", fgColor="00FFFF")
+            else:
+                cell.value = header
+                cell.fill = PatternFill("solid", fgColor="FFFF00")
+            cell.font = Font(bold=True)
+            cell.alignment = Alignment(horizontal="center", vertical="center")
+
+        for i, row in enumerate(report_df.itertuples(index=False), start=2):
+            for j, val in enumerate(row, start=1):
+                c = ws.cell(row=i, column=j)
+                if j in (8, 9):  # date columns
+                    if pd.notna(val):
+                        c.value = val.date()
+                        c.number_format = "DD.MM.YYYY"
+                    else:
+                        c.value = None
+                else:
+                    c.value = None if pd.isna(val) else str(val)
+
+            # Date columns start at J (10)
+            for k in range(10, 10 + len(day_columns)):
+                letter = ws.cell(row=1, column=k).column_letter
+                ws.cell(row=i, column=k).value = (
+                    f'=ЕСЛИ(И({letter}$1>=$H{i}; ИЛИ($I{i}=""; {letter}$1<=$I{i})); 1; 0)'
+                )
+
+        ws.freeze_panes = "J2"
+        widths = [22, 32, 20, 28, 28, 28, 20, 14, 14]
+        for cidx, width in enumerate(widths, start=1):
+            ws.column_dimensions[ws.cell(1, cidx).column_letter].width = width
+        for cidx in range(10, 10 + len(day_columns)):
+            ws.column_dimensions[ws.cell(1, cidx).column_letter].width = 12
+
+        audit = wb.create_sheet("Аудит")
+        audit_rows = [
+            ("Показатель", "Значение"),
+            ("Всего записей в Базе", int(len(df))),
+            ("Записей в отчете (пересечение с периодом)", int(len(report_df))),
+            ("Пустая дата приема", missing_hire),
+            ("Некорректный формат даты приема", invalid_hire),
+            ("Некорректный формат даты увольнения", invalid_fire),
+            (
+                "Дата увольнения раньше даты приема (исправлено очисткой даты увольнения)",
+                fire_before_hire_count,
+            ),
+            ("Начало периода", start_date_value.strftime("%d.%m.%Y")),
+            ("Конец периода", end_date_value.strftime("%d.%m.%Y")),
+            ("Количество дневных колонок", len(day_columns)),
+        ]
+        for r_idx, (k, v) in enumerate(audit_rows, start=1):
+            audit.cell(r_idx, 1, k)
+            audit.cell(r_idx, 2, v)
+            if r_idx == 1:
+                audit.cell(r_idx, 1).font = Font(bold=True)
+                audit.cell(r_idx, 2).font = Font(bold=True)
+        audit.column_dimensions["A"].width = 78
+        audit.column_dimensions["B"].width = 24
+
+        os.makedirs(UPLOAD_DIR, exist_ok=True)
+        output_name = f"{uuid.uuid4()}_base_report_{start_date_value.strftime('%Y%m%d')}_{end_date_value.strftime('%Y%m%d')}.xlsx"
+        output_path = os.path.join(UPLOAD_DIR, output_name)
+        wb.save(output_path)
+        wb.close()
+
+        return {
+            "report_type": "base_presence_matrix",
+            "title": "Матрица присутствия (База)",
+            "total": int(len(report_df)),
+            "total_rows_in_db": int(len(df)),
+            "date_columns": len(day_columns),
+            "start_date": start_date_value.strftime("%d.%m.%Y"),
+            "end_date": end_date_value.strftime("%d.%m.%Y"),
+            "file_path": output_path,
+            "stored_filename": output_name,
+            "file_id": os.path.splitext(output_name)[0],
+            "audit": {
+                "missing_hire": missing_hire,
+                "invalid_hire": invalid_hire,
+                "invalid_fire": invalid_fire,
+                "fire_before_hire_fixed": fire_before_hire_count,
+            },
+        }
+    finally:
+        conn.close()

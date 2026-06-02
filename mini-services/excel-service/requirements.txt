@@ -1,18 +1,22 @@
-fastapi
-uvicorn
-python-multipart
-openpyxl
-xlsxwriter
-xlrd
-pandas
-numpy
-polars
-pyexcel
-pyexcel-xlsx
-pyexcel-xls
-xlwt
-xlutils
-pylightxl
-pyxlsb
-formulas
-pyexcelerate
+# Диапазоны для совместимости; точные версии — requirements.lock (пересборка:
+# powershell -File .zscripts\generate-requirements-lock.ps1)
+# Установка: pip install -r requirements.lock
+fastapi>=0.115.0,<1.0
+uvicorn[standard]>=0.30.0,<1.0
+python-multipart>=0.0.9
+openpyxl>=3.1.0
+xlsxwriter>=3.2.0
+xlrd>=2.0.0
+pandas>=2.2.0
+numpy>=1.26.0
+polars>=1.0.0
+xlwt>=1.3.0
+xlutils>=2.0.0
+pyxlsb>=1.0.10
+formulas>=1.2.0
+pyexcelerate>=0.5.0
+pycel>=1.0b30
+xlwings>=0.30.0; sys_platform == "win32"
+rapidfuzz>=3.0.0
+oletools>=0.60.0
+python-calamine>=0.2.0

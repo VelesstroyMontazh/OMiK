@@ -30,8 +30,15 @@ yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
 
-# env files (can opt-in for committing if needed)
-.env*
+# env files — не коммитить секреты и локальные настройки
+.env
+.env.local
+.env.*.local
+.env.development.local
+.env.test.local
+.env.production.local
+# Шаблон можно коммитить
+!.env.example
 
 # vercel
 .vercel
@@ -50,6 +57,34 @@ test
 prompt
 
 server.log
+# Python
+**/__pycache__/
+*.py[cod]
+*.pyc
+
+# Python
+**/__pycache__/
+*.py[cod]
+*.pyc
+
+# Python
+**/__pycache__/
+*.py[cod]
+*.pyc
+
+# Python
+**/__pycache__/
+*.py[cod]
+*.pyc
+
+# Python
+**/__pycache__/
+*.py[cod]
+*.pyc
+
+# Python lock venv
+mini-services/excel-service/.venv-lock/
+
 # Skills directory
 /skills/db/main_db.sqlite
 upload/main_db.sqlite

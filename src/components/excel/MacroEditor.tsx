@@ -19,8 +19,6 @@ export default function MacroEditor() {
   const [isRunning, setIsRunning] = useState(false)
   const [runSuccess, setRunSuccess] = useState<boolean | null>(null)
 
-  const selectedMacro = macros.find((m) => m.id === selectedMacroId)
-
   const handleNewMacro = useCallback(() => {
     const id = `macro-${Date.now()}`
     const newMacro = {

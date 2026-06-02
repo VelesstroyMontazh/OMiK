@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { EXCEL_BACKEND_URL } from '@/lib/excel-backend'
+import { proxyBackend } from '@/lib/backend-proxy'
 import { db } from '@/lib/db'
 
 type DataAction =
@@ -164,29 +164,17 @@ export async function POST(request: NextRequest) {
     const endpoint = ACTION_ENDPOINTS[action]
     const backendBody = buildBackendBody(action, body)
 
-    const response = await fetch(`${EXCEL_BACKEND_URL}${endpoint}`, {
+    const proxyRes = await proxyBackend(endpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(backendBody),
     })
 
-    if (!response.ok) {
-      let errorMessage = response.statusText
-      try {
-        const errBody = await response.json()
-        if (errBody.detail) {
-          errorMessage = typeof errBody.detail === 'string' ? errBody.detail : JSON.stringify(errBody.detail)
-        }
-      } catch {
-        // ignore
-      }
-      return NextResponse.json(
-        { error: `Backend error (${response.status}): ${errorMessage}` },
-        { status: response.status }
-      )
+    if (proxyRes.status < 200 || proxyRes.status >= 300) {
+      return proxyRes
     }
 
-    const data = await response.json()
+    const data = (await proxyRes.json()) as Record<string, unknown>
 
     // Log the operation to the database
     try {

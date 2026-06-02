@@ -1,0 +1,1 @@
+def merge_calendar_with_main_db(output_name: Optional[str] = None) -> Dict[str, Any]:

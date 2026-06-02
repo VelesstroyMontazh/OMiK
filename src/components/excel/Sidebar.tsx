@@ -3,27 +3,67 @@
 import React, { useCallback, useRef, useState } from 'react'
 import { useExcelStore, type FileInfo } from '@/store/excel-store'
 import { useExcelApi } from '@/hooks/use-excel-api'
+import { useUploadWithVba } from '@/hooks/use-upload-with-vba'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { ScrollArea } from '@/components/ui/scroll-area'
-import { FileIcon, Code2, BarChart3, X, FileSpreadsheet, Clock, Upload, Trash2, Download, Loader2, Database, Users } from 'lucide-react'
+import { FileIcon, Code2, BarChart3, X, FileSpreadsheet, Clock, Upload, Trash2, Download, Loader2, Users, GitMerge, Plane, Wand2, Route, Ticket } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 
 function FilesPanel() {
-  const { files, activeFile, setActiveFile, setIsLoading, setError, setFiles, setCurrentFilePath } = useExcelStore()
-  const api = useExcelApi()
+  const { files, activeFile, setIsLoading, setError, setFiles } = useExcelStore()
+  const api = useUploadWithVba()
   const fileInputRef = useRef<HTMLInputElement>(null)
-  const [uploadingName, setUploadingName] = useState<string | null>(null)
 
   const handleUploadClick = useCallback(() => {
     fileInputRef.current?.click()
   }, [])
+
+  const loadFileData = useCallback(
+    async (file: FileInfo) => {
+      if (!file.filePath || !file.sheets || file.sheets.length === 0) return
+
+      setIsLoading(true)
+      setError(null)
+
+      try {
+        const sheetName = file.sheets[0]
+        const result = await api.fetchSheetData(file.filePath, sheetName)
+
+        // Update the store with sheet names and data
+        const store = useExcelStore.getState()
+        const newSheets = result.data.length > 0 ? file.sheets!.map((name, i) => {
+          if (i === 0) {
+            return { ...store.sheets[0], name }
+          }
+          return { name, data: {}, mergedCells: [], columnWidths: {}, rowHeights: {}, defaultColumnWidth: 100, defaultRowHeight: 24 }
+        }) : store.sheets
+
+        store.pushNavHistory()
+        useExcelStore.setState({
+          activeFile: file,
+          currentFilePath: file.filePath,
+          sheets: newSheets,
+          activeSheetIndex: 0,
+          selectedCell: { row: 0, col: 0 },
+          selectedRange: null,
+        })
+
+        // Load the data
+        store.loadApiSheetData(result.data)
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Ошибка загрузки данных файла')
+      } finally {
+        setIsLoading(false)
+      }
+    },
+    [api, setIsLoading, setError]
+  )
 
   const handleFileSelect = useCallback(
     async (e: React.ChangeEvent<HTMLInputElement>) => {
       const file = e.target.files?.[0]
       if (!file) return
 
-      setUploadingName(file.name)
       useExcelStore.getState().setIsUploading(true)
       useExcelStore.getState().setUploadProgress(0)
 
@@ -63,55 +103,15 @@ function FilesPanel() {
       } finally {
         useExcelStore.getState().setIsUploading(false)
         useExcelStore.getState().setUploadProgress(0)
-        setUploadingName(null)
         // Reset file input
         if (fileInputRef.current) {
           fileInputRef.current.value = ''
         }
       }
     },
-    [api, setFiles, setError]
-  )
-
-  const loadFileData = useCallback(
-    async (file: FileInfo) => {
-      if (!file.filePath || !file.sheets || file.sheets.length === 0) return
-
-      setIsLoading(true)
-      setError(null)
-
-      try {
-        const sheetName = file.sheets[0]
-        const result = await api.fetchSheetData(file.filePath, sheetName)
-
-        // Update the store with sheet names and data
-        const store = useExcelStore.getState()
-        const newSheets = result.data.length > 0 ? file.sheets!.map((name, i) => {
-          if (i === 0) {
-            return { ...store.sheets[0], name }
-          }
-          return { name, data: {}, mergedCells: [], columnWidths: {}, rowHeights: {}, defaultColumnWidth: 100, defaultRowHeight: 24 }
-        }) : store.sheets
-
-        useExcelStore.setState({
-          activeFile: file,
-          currentFilePath: file.filePath,
-          sheets: newSheets,
-          activeSheetIndex: 0,
-          selectedCell: { row: 0, col: 0 },
-          selectedRange: null,
-        })
-
-        // Load the data
-        store.loadApiSheetData(result.data)
-        setActiveFile(file)
-      } catch (err) {
-        setError(err instanceof Error ? err.message : 'Ошибка загрузки данных файла')
-      } finally {
-        setIsLoading(false)
-      }
-    },
-    [api, setActiveFile, setIsLoading, setError]
+    // loadFileData declared below; stable via useCallback
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- loadFileData
+    [api, setFiles, setError, loadFileData]
   )
 
   const handleFileClick = useCallback(
@@ -137,7 +137,7 @@ function FilesPanel() {
         setError(err instanceof Error ? err.message : 'Ошибка удаления файла')
       }
     },
-    [api, setFiles, setError]
+    [api, setFiles, setError, loadFileData]
   )
 
   const handleDownloadFile = useCallback(
@@ -170,9 +170,45 @@ function FilesPanel() {
         <Button
           variant="outline"
           size="sm"
+          className="w-full h-8 text-xs border-sky-300 bg-sky-50 hover:bg-sky-100 text-sky-800"
+          onClick={() => {
+            useExcelStore.getState().navigateTo({
+              id: 'calendar-module',
+              name: 'Календарь Прилет-Вылет',
+              createdAt: Date.now(),
+              updatedAt: Date.now(),
+              size: 0,
+            })
+            useExcelStore.getState().setSidebarOpen(false)
+          }}
+        >
+          <Plane className="h-3.5 w-3.5 mr-1.5" />
+          Календарь Прилет-Вылет
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          className="w-full h-8 text-xs border-sky-300 bg-sky-50 hover:bg-sky-100 text-sky-800"
+          onClick={() => {
+            useExcelStore.getState().navigateTo({
+              id: 'calendar-module',
+              name: 'Календарь Прилет-Вылет',
+              createdAt: Date.now(),
+              updatedAt: Date.now(),
+              size: 0,
+            })
+            useExcelStore.getState().setSidebarOpen(false)
+          }}
+        >
+          <Plane className="h-3.5 w-3.5 mr-1.5" />
+          Календарь Прилет-Вылет
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
           className="w-full h-8 text-xs border-amber-300 bg-amber-50 hover:bg-amber-100 text-amber-800"
           onClick={() => {
-            useExcelStore.getState().setActiveFile({
+            useExcelStore.getState().navigateTo({
               id: 'main-db',
               name: 'Основная БД — Сотрудники',
               createdAt: Date.now(),
@@ -184,6 +220,42 @@ function FilesPanel() {
         >
           <Users className="h-3.5 w-3.5 mr-1.5" />
           Основная БД
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          className="w-full h-8 text-xs border-blue-300 bg-blue-50 hover:bg-blue-100 text-blue-800"
+          onClick={() => {
+            useExcelStore.getState().navigateTo({
+              id: 'data-merge',
+              name: 'Объединение данных',
+              createdAt: Date.now(),
+              updatedAt: Date.now(),
+              size: 0,
+            })
+            useExcelStore.getState().setSidebarOpen(false)
+          }}
+        >
+          <GitMerge className="h-3.5 w-3.5 mr-1.5" />
+          Объединение данных
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          className="w-full h-8 text-xs border-sky-300 bg-sky-50 hover:bg-sky-100 text-sky-800"
+          onClick={() => {
+            useExcelStore.getState().navigateTo({
+              id: 'calendar-module',
+              name: 'Календарь Прилет–Вылет',
+              createdAt: Date.now(),
+              updatedAt: Date.now(),
+              size: 0,
+            })
+            useExcelStore.getState().setSidebarOpen(false)
+          }}
+        >
+          <Plane className="h-3.5 w-3.5 mr-1.5" />
+          Календарь
         </Button>
         <Button
           variant="outline"
@@ -241,7 +313,7 @@ function FilesPanel() {
                   <button
                     className="p-1 rounded hover:bg-gray-200 text-gray-500 hover:text-blue-600"
                     onClick={(e) => handleDownloadFile(e, file.id)}
-                    title="Скачать"
+                    title="Экспорт в Excel"
                   >
                     <Download className="h-3.5 w-3.5" />
                   </button>

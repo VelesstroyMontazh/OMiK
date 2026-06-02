@@ -2,7 +2,7 @@
 
 import React, { useCallback, useRef, useState } from 'react'
 import { useExcelStore } from '@/store/excel-store'
-import { Plus, ChevronLeft, ChevronRight, X } from 'lucide-react'
+import { Plus, ChevronLeft, ChevronRight } from 'lucide-react'
 import {
   ContextMenu,
   ContextMenuContent,
@@ -23,7 +23,6 @@ export default function SheetTabs() {
   const scrollRef = useRef<HTMLDivElement>(null)
   const [renamingIndex, setRenamingIndex] = useState<number | null>(null)
   const [renameValue, setRenameValue] = useState('')
-  const [contextSheetIndex, setContextSheetIndex] = useState<number | null>(null)
 
   const handleAddSheet = useCallback(() => {
     addSheet()

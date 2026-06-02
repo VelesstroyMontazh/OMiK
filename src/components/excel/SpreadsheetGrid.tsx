@@ -1,8 +1,8 @@
 'use client'
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { useExcelStore, colToLetter, cellRef, getSelectedRangeBounds } from '@/store/excel-store'
-import type { CellStyle, SelectionRange } from '@/store/excel-store'
+import { useExcelStore, colToLetter, getSelectedRangeBounds } from '@/store/excel-store'
+import type { CellStyle } from '@/store/excel-store'
 
 const TOTAL_ROWS = 10000
 const TOTAL_COLS = 100
@@ -83,12 +83,6 @@ export default function SpreadsheetGrid() {
     setContextMenuPosition,
     setColumnWidth,
     setRowHeight,
-    insertRow,
-    insertColumn,
-    deleteRow,
-    deleteColumn,
-    mergeCells,
-    unmergeCells,
   } = useExcelStore()
 
   const sheet = sheets[activeSheetIndex]
@@ -107,11 +101,8 @@ export default function SpreadsheetGrid() {
   // Calculate visible range
   const colWidths = useMemo(() => {
     const widths: number[] = []
-    let cumulative = 0
     for (let c = 0; c < TOTAL_COLS; c++) {
-      const w = sheet.columnWidths[c] || DEFAULT_COL_WIDTH
-      widths.push(w)
-      cumulative += w
+      widths.push(sheet.columnWidths[c] || DEFAULT_COL_WIDTH)
     }
     return widths
   }, [sheet.columnWidths])
@@ -176,7 +167,7 @@ export default function SpreadsheetGrid() {
   const totalHeight = useMemo(() => {
     // For performance, approximate instead of summing all 10000 rows
     return TOTAL_ROWS * DEFAULT_ROW_HEIGHT
-  }, [rowHeights])
+  }, [])
 
   // Position for each visible row/col
   const colPositions = useMemo(() => {
@@ -427,8 +418,8 @@ export default function SpreadsheetGrid() {
   // Selection range bounds for highlighting
   const selectionBounds = useMemo(() => {
     const state = useExcelStore.getState()
-    return getSelectedRangeBounds(state)
-  }, [selectedCell, selectedRange])
+    return getSelectedRangeBounds({ ...state, selectedRange })
+  }, [selectedRange])
 
   // Merged cell lookup
   const mergedCellLookup = useMemo(() => {
@@ -441,7 +432,7 @@ export default function SpreadsheetGrid() {
       }
     }
     return lookup
-  }, [sheet.mergedCells])
+  }, [sheet])
 
   const isInSelection = useCallback(
     (row: number, col: number) => {
@@ -476,7 +467,7 @@ export default function SpreadsheetGrid() {
 
   // Row header click (select entire row)
   const handleRowHeaderClick = useCallback(
-    (row: number, e: React.MouseEvent) => {
+    (row: number, _e: React.MouseEvent) => {
       if (isEditing) stopEditing(true)
       setSelectedCell(row, 0)
       setSelectedRange({ startRow: row, startCol: 0, endRow: row, endCol: TOTAL_COLS - 1 })
@@ -487,7 +478,7 @@ export default function SpreadsheetGrid() {
 
   // Col header click (select entire column)
   const handleColHeaderClick = useCallback(
-    (col: number, e: React.MouseEvent) => {
+    (col: number, _e: React.MouseEvent) => {
       if (isEditing) stopEditing(true)
       setSelectedCell(0, col)
       setSelectedRange({ startRow: 0, startCol: col, endRow: TOTAL_ROWS - 1, endCol: col })

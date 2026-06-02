@@ -2,11 +2,14 @@ import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   output: "standalone",
-  /* config options here */
   typescript: {
-    ignoreBuildErrors: true,
+    ignoreBuildErrors: false,
   },
-  reactStrictMode: false,
+  reactStrictMode: process.env.NODE_ENV !== "production",
+  // Билеты .xlsm >10MB: иначе Next обрезает body (proxy + middleware) → «Ошибка загрузки»
+  experimental: {
+    proxyClientMaxBodySize: "250mb",
+  },
 };
 
 export default nextConfig;

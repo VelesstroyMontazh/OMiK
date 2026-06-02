@@ -13,11 +13,15 @@ from openpyxl.styles import Font, PatternFill, Border, Side, Alignment, numbers
 import pandas as pd
 import numpy as np
 
-try:
-    import polars as pl
-    HAS_POLARS = True
-except ImportError:
-    HAS_POLARS = False
+import excel_libs
+from excel_libs import (
+    HAS_POLARS,
+    POLARS_ROW_THRESHOLD,
+    polars_analyze_numeric,
+    polars_filter_dataframe,
+    polars_sort_dataframe,
+    read_dataframe,
+)
 
 from excel_handler import _parse_range, _nan_to_none
 
@@ -33,13 +37,11 @@ def sort_data(
     ascending: bool = True,
     cell_range: Optional[str] = None
 ) -> Dict[str, Any]:
-    """Sort data in a sheet by a specified column using pandas for robustness."""
+    """Sort data in a sheet (Polars для больших таблиц, иначе Pandas)."""
     ext = os.path.splitext(file_path)[1].lower()
 
-    if ext in ['.xlsx', '.xlsm']:
-        df = pd.read_excel(file_path, sheet_name=sheet_name, engine='openpyxl')
-    elif ext == '.xls':
-        df = pd.read_excel(file_path, sheet_name=sheet_name, engine='xlrd')
+    if ext in ['.xlsx', '.xlsm', '.xls', '.xlsb']:
+        df = read_dataframe(file_path, sheet_name=sheet_name)
     elif ext == '.csv':
         df = pd.read_csv(file_path)
     else:
@@ -65,8 +67,11 @@ def sort_data(
         except Exception:
             raise ValueError(f"Column '{column}' not found in data. Available: {list(df.columns)}")
 
-    # Sort the dataframe
-    df_sorted = df.sort_values(by=sort_col, ascending=ascending, na_position='last')
+    use_polars = HAS_POLARS and len(df) >= POLARS_ROW_THRESHOLD
+    if use_polars:
+        df_sorted = polars_sort_dataframe(df, str(sort_col), ascending)
+    else:
+        df_sorted = df.sort_values(by=sort_col, ascending=ascending, na_position='last')
 
     # Write back sorted data to the file
     if ext in ['.xlsx', '.xlsm']:
@@ -97,6 +102,7 @@ def sort_data(
         "column": sort_col,
         "ascending": ascending,
         "rows_sorted": len(df_sorted),
+        "engine": "polars" if use_polars else "pandas",
     }
 
 
@@ -119,11 +125,8 @@ def filter_data(
     """
     ext = os.path.splitext(file_path)[1].lower()
 
-    # Use pandas for efficient filtering
-    if ext in ['.xlsx', '.xlsm']:
-        df = pd.read_excel(file_path, sheet_name=sheet_name, engine='openpyxl')
-    elif ext == '.xls':
-        df = pd.read_excel(file_path, sheet_name=sheet_name, engine='xlrd')
+    if ext in ['.xlsx', '.xlsm', '.xls', '.xlsb']:
+        df = read_dataframe(file_path, sheet_name=sheet_name)
     elif ext == '.csv':
         df = pd.read_csv(file_path)
     else:
@@ -170,12 +173,14 @@ def filter_data(
     else:
         raise ValueError(f"Unknown condition: {condition}")
 
-    filtered = df[mask]
+    use_polars = HAS_POLARS and len(df) >= POLARS_ROW_THRESHOLD
+    if use_polars:
+        filtered = polars_filter_dataframe(df, column, mask)
+    else:
+        filtered = df[mask]
 
-    # Convert to list of dicts for response
     result_data = filtered.to_dict(orient='records')
 
-    # Convert NaN to None for JSON serialization
     for row in result_data:
         for k, v in row.items():
             row[k] = _nan_to_none(v)
@@ -188,6 +193,7 @@ def filter_data(
         "total_rows": len(df),
         "matched_rows": len(filtered),
         "data": result_data,
+        "engine": "polars" if use_polars else "pandas",
     }
 
 
@@ -611,10 +617,8 @@ def analyze_data(
     """
     ext = os.path.splitext(file_path)[1].lower()
 
-    if ext in ['.xlsx', '.xlsm']:
-        df = pd.read_excel(file_path, sheet_name=sheet_name, engine='openpyxl')
-    elif ext == '.xls':
-        df = pd.read_excel(file_path, sheet_name=sheet_name, engine='xlrd')
+    if ext in ['.xlsx', '.xlsm', '.xls', '.xlsb']:
+        df = read_dataframe(file_path, sheet_name=sheet_name)
     elif ext == '.csv':
         df = pd.read_csv(file_path)
     else:
@@ -637,6 +641,29 @@ def analyze_data(
             "operations": operations,
             "message": "No numeric columns found for analysis",
         }
+
+    engine = "pandas"
+    fast: Dict[str, Any] = {}
+    polars_ops = {o.lower() for o in operations} & {"sum", "avg", "mean", "min", "max", "std", "median"}
+    if HAS_POLARS and len(df) >= POLARS_ROW_THRESHOLD and polars_ops:
+        fast = polars_analyze_numeric(numeric_df, list(polars_ops))
+        if fast:
+            engine = "polars"
+            for op_key, vals in fast.items():
+                for col_key in vals:
+                    if isinstance(vals[col_key], list) and len(vals[col_key]) == 1:
+                        vals[col_key] = vals[col_key][0]
+                    vals[col_key] = _nan_to_none(vals[col_key])
+            remaining = [o for o in operations if o.lower() not in fast]
+            if not remaining:
+                return {
+                    "analysis": fast,
+                    "operations": operations,
+                    "numeric_columns": list(numeric_df.columns),
+                    "total_rows": len(df),
+                    "total_columns": len(df.columns),
+                    "engine": engine,
+                }
 
     results = {}
 
@@ -685,10 +712,14 @@ def analyze_data(
                 else:
                     results[op_key][col_key] = _nan_to_none(val)
 
+    if engine == "polars" and fast:
+        results = {**fast, **results}
+
     return {
         "analysis": results,
         "operations": operations,
         "numeric_columns": list(numeric_df.columns),
         "total_rows": len(df),
         "total_columns": len(df.columns),
+        "engine": engine,
     }

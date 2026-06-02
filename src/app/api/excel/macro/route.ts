@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { EXCEL_BACKEND_URL } from '@/lib/excel-backend'
+import { backendFetch, proxyBackend } from '@/lib/backend-proxy'
 import { db } from '@/lib/db'
 
 interface MacroExecuteBody {
@@ -21,18 +21,17 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    const response = await fetch(`${EXCEL_BACKEND_URL}/api/macro/execute`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ file_path, macro_code, language }),
-    })
-
-    const data = await response.json()
-
-    if (!response.ok) {
+    let data: { success?: boolean; output?: unknown; duration?: number; detail?: string }
+    try {
+      data = await backendFetch('/api/macro/execute', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ file_path, macro_code, language }),
+      })
+    } catch (e) {
       return NextResponse.json(
-        { error: data.detail || `Backend error (${response.status})` },
-        { status: response.status }
+        { error: e instanceof Error ? e.message : 'Backend error' },
+        { status: 502 },
       )
     }
 
@@ -100,25 +99,11 @@ export async function GET(request: NextRequest) {
 
     // Fetch macros from the Python backend for a specific file
     const params = new URLSearchParams({ file_path })
-    const response = await fetch(`${EXCEL_BACKEND_URL}/api/macro/list?${params.toString()}`)
-
-    if (!response.ok) {
-      let errorMessage = response.statusText
-      try {
-        const body = await response.json()
-        if (body.detail) {
-          errorMessage = typeof body.detail === 'string' ? body.detail : JSON.stringify(body.detail)
-        }
-      } catch {
-        // ignore
-      }
-      return NextResponse.json(
-        { error: `Backend error (${response.status}): ${errorMessage}` },
-        { status: response.status }
-      )
+    const listRes = await proxyBackend(`/api/macro/list?${params.toString()}`)
+    if (listRes.status !== 200) {
+      return listRes
     }
-
-    const backendData = await response.json()
+    const backendData = (await listRes.json()) as Record<string, unknown>
 
     // Also include macros from the database for this file
     try {

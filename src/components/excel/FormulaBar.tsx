@@ -1,6 +1,6 @@
 'use client'
 
-import React, { useCallback, useEffect, useRef } from 'react'
+import React, { useCallback, useRef } from 'react'
 import { useExcelStore, cellRef } from '@/store/excel-store'
 import { FunctionSquare } from 'lucide-react'
 
@@ -14,7 +14,6 @@ export default function FormulaBar() {
     startEditing,
     stopEditing,
     setEditValue,
-    setCellValue,
   } = useExcelStore()
 
   const inputRef = useRef<HTMLInputElement>(null)

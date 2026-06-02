@@ -379,6 +379,11 @@ class PythonMacroExecutor:
             # Prepare namespace
             import pandas as pd
             import numpy as np
+            import excel_libs
+            import excel_libs
+            import excel_libs
+            import excel_libs
+            import excel_libs
 
             namespace = {
                 'wb': wb,
@@ -387,6 +392,7 @@ class PythonMacroExecutor:
                 'worksheet': wb.active,
                 'pd': pd,
                 'np': np,
+                'excel_libs': excel_libs,
                 'openpyxl': openpyxl,
                 'get_column_letter': get_column_letter,
                 'column_index_from_string': column_index_from_string,

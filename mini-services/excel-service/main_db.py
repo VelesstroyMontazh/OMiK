@@ -7,18 +7,29 @@ Key columns (0-based indices): 0, 1, 2, 3, 4, 5, 6, 8, 10, 11, 12, 13
 
 import os
 import json
+import re
 import sqlite3
+import threading
+import time
+import gc
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 
 import pandas as pd
 import numpy as np
+import openpyxl
 
-UPLOAD_DIR = "/home/z/my-project/upload/"
+from data_paths import MAIN_DB_DIR
+
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+UPLOAD_DIR = os.path.join(PROJECT_ROOT, "upload")
 DB_PATH = os.path.join(UPLOAD_DIR, "main_db.sqlite")
 META_PATH = os.path.join(UPLOAD_DIR, "main_db_meta.json")
 
 KEY_COLUMN_INDICES = [0, 1, 2, 3, 4, 5, 6, 8, 10, 11, 12, 13]
+
+_conn_lock = threading.RLock()
+_open_connections: List[sqlite3.Connection] = []
 
 _cache: Dict[str, Any] = {
     "loaded": False,
@@ -77,20 +88,42 @@ def _get_cell_type(value) -> str:
         return "string"
 
 
+def main_db_upload_root() -> str:
+    """Единственный каталог для Excel и SQLite Основной Базы."""
+    return os.path.normcase(MAIN_DB_DIR)
+
+
+def main_db_search_dirs() -> List[str]:
+    """Только upload проекта (C:\\...\\OMiK_VSM\\upload)."""
+    if os.path.isdir(MAIN_DB_DIR):
+        return [MAIN_DB_DIR]
+    return []
+
+
+def _path_under_main_db_upload(file_path: str) -> bool:
+    root = main_db_upload_root()
+    norm = os.path.normcase(os.path.abspath(file_path))
+    return norm == root or norm.startswith(root + os.sep)
+
+
 def _detect_main_db_file() -> Optional[str]:
-    if not os.path.isdir(UPLOAD_DIR):
-        return None
-    xlsx_files = []
-    for filename in os.listdir(UPLOAD_DIR):
-        if filename.lower().endswith(('.xlsx', '.xlsm')):
-            file_path = os.path.join(UPLOAD_DIR, filename)
+    xlsx_files: List[tuple[str, int, str]] = []
+    for folder in main_db_search_dirs():
+        try:
+            names = os.listdir(folder)
+        except OSError:
+            continue
+        for filename in names:
+            if not filename.lower().endswith((".xlsx", ".xlsm")):
+                continue
+            file_path = os.path.join(folder, filename)
             if os.path.isfile(file_path):
                 xlsx_files.append((file_path, os.path.getsize(file_path), filename))
     if not xlsx_files:
         return None
     for file_path, _, filename in xlsx_files:
         name_lower = filename.lower()
-        if '1с' in name_lower or '1c' in name_lower:
+        if "1с" in name_lower or "1c" in name_lower:
             return file_path
     xlsx_files.sort(key=lambda x: x[1], reverse=True)
     return xlsx_files[0][0]
@@ -106,37 +139,679 @@ def _match_key_columns(columns: List[str]) -> List[str]:
     return matched
 
 
+def _cell_as_text(value: Any) -> str:
+    """Текст ячейки без потери ведущих нулей (строка или целое из Excel)."""
+    if value is None:
+        return ""
+    if isinstance(value, float) and np.isnan(value):
+        return ""
+    if isinstance(value, str):
+        s = value.strip()
+        return "" if s.lower() in ("nan", "none", "nat") else s
+    if isinstance(value, (int, np.integer)):
+        return str(int(value))
+    if isinstance(value, (float, np.floating)):
+        if float(value) == int(value):
+            return str(int(value))
+        return str(value).strip()
+    s = str(value).strip()
+    if s.lower() in ("nan", "none", "nat"):
+        return ""
+    if re.fullmatch(r"\d+\.0+", s):
+        return s.split(".")[0]
+    return s
+
+
+def _is_passport_series_col(col_name: str) -> bool:
+    cl = col_name.lower().replace(" ", "")
+    return "удостоверение" in cl and "серия" in cl
+
+
+def _is_passport_number_col(col_name: str) -> bool:
+    cl = col_name.lower().replace(" ", "")
+    return "удостоверение" in cl and "номер" in cl and "серия" not in cl
+
+
+# Загранпаспорт: серии 82 и 83 — две цифры, без «00» впереди (не 0082/0083).
+_PASSPORT_SERIES_NO_ZFILL = frozenset({"82", "83"})
+
+
+def _format_passport_series_digits(digits: str) -> str:
+    core = digits.lstrip("0") or "0"
+    if core in _PASSPORT_SERIES_NO_ZFILL:
+        return core
+    if len(digits) <= 4:
+        return digits.zfill(4)
+    return digits
+
+
+def _format_passport_value(value: Any, col_name: str) -> str:
+    """Серия — 4 цифры (кроме 82/83), номер — 6 цифр (ведущие нули)."""
+    s = _cell_as_text(value)
+    if not s:
+        return ""
+    digits = re.sub(r"\D", "", s)
+    if not digits:
+        return s
+    if _is_passport_series_col(col_name) and len(digits) <= 4:
+        return _format_passport_series_digits(digits)
+    if _is_passport_number_col(col_name) and len(digits) <= 6:
+        return digits.zfill(6)
+    return digits if digits == re.sub(r"\s", "", s) else s
+
+
+def _overlay_passport_columns_from_workbook(
+    df: pd.DataFrame,
+    columns: List[str],
+    file_path: str,
+    sheet_name: str,
+) -> pd.DataFrame:
+    """Один проход по листу: Серия/Номер как в Excel (тип «текст» сохраняет нули)."""
+    targets = [c for c in columns if _is_passport_series_col(c) or _is_passport_number_col(c)]
+    if not targets:
+        return df
+    out = df.copy()
+    try:
+        wb = openpyxl.load_workbook(file_path, read_only=True, data_only=False)
+        ws = wb[sheet_name] if sheet_name in wb.sheetnames else wb.active
+        header_row = next(ws.iter_rows(min_row=1, max_row=1, values_only=False))
+        col_index: Dict[str, int] = {}
+        for idx, cell in enumerate(header_row):
+            if cell.value is not None:
+                col_index[str(cell.value).strip()] = idx
+        target_ci: List[tuple[str, int]] = []
+        for col_name in targets:
+            ci = col_index.get(col_name)
+            if ci is not None:
+                target_ci.append((col_name, ci))
+        if not target_ci:
+            wb.close()
+            return out
+        buffers: Dict[str, List[str]] = {name: [] for name, _ in target_ci}
+        for row in ws.iter_rows(min_row=2, values_only=False):
+            cells = list(row)
+            for col_name, ci in target_ci:
+                if ci >= len(cells):
+                    buffers[col_name].append("")
+                    continue
+                cell = cells[ci]
+                if getattr(cell, "data_type", None) == "s" or isinstance(cell.value, str):
+                    buffers[col_name].append(_cell_as_text(cell.value))
+                else:
+                    buffers[col_name].append(_format_passport_value(cell.value, col_name))
+        wb.close()
+        for col_name, _ in target_ci:
+            if len(buffers[col_name]) == len(out):
+                out[col_name] = buffers[col_name]
+    except Exception:
+        return df
+    return out
+
+
+def _fix_passport_columns_in_dataframe(df: pd.DataFrame, columns: List[str]) -> pd.DataFrame:
+    out = df.copy()
+    for col in columns:
+        if _is_passport_series_col(col) or _is_passport_number_col(col):
+            out[col] = out[col].map(lambda v, c=col: _format_passport_value(v, c))
+    return out
+
+
+def _cell_as_text(value: Any) -> str:
+    """Текст ячейки без потери ведущих нулей (строка или целое из Excel)."""
+    if value is None:
+        return ""
+    if isinstance(value, float) and np.isnan(value):
+        return ""
+    if isinstance(value, str):
+        s = value.strip()
+        return "" if s.lower() in ("nan", "none", "nat") else s
+    if isinstance(value, (int, np.integer)):
+        return str(int(value))
+    if isinstance(value, (float, np.floating)):
+        if float(value) == int(value):
+            return str(int(value))
+        return str(value).strip()
+    s = str(value).strip()
+    if s.lower() in ("nan", "none", "nat"):
+        return ""
+    if re.fullmatch(r"\d+\.0+", s):
+        return s.split(".")[0]
+    return s
+
+
+def _is_passport_series_col(col_name: str) -> bool:
+    cl = col_name.lower().replace(" ", "")
+    return "удостоверение" in cl and "серия" in cl
+
+
+def _is_passport_number_col(col_name: str) -> bool:
+    cl = col_name.lower().replace(" ", "")
+    return "удостоверение" in cl and "номер" in cl and "серия" not in cl
+
+
+# Загранпаспорт: серии 82 и 83 — две цифры, без «00» впереди (не 0082/0083).
+_PASSPORT_SERIES_NO_ZFILL = frozenset({"82", "83"})
+
+
+def _format_passport_series_digits(digits: str) -> str:
+    core = digits.lstrip("0") or "0"
+    if core in _PASSPORT_SERIES_NO_ZFILL:
+        return core
+    if len(digits) <= 4:
+        return digits.zfill(4)
+    return digits
+
+
+def _format_passport_value(value: Any, col_name: str) -> str:
+    """Серия — 4 цифры (кроме 82/83), номер — 6 цифр (ведущие нули)."""
+    s = _cell_as_text(value)
+    if not s:
+        return ""
+    digits = re.sub(r"\D", "", s)
+    if not digits:
+        return s
+    if _is_passport_series_col(col_name) and len(digits) <= 4:
+        return _format_passport_series_digits(digits)
+    if _is_passport_number_col(col_name) and len(digits) <= 6:
+        return digits.zfill(6)
+    return digits if digits == re.sub(r"\s", "", s) else s
+
+
+def _overlay_passport_columns_from_workbook(
+    df: pd.DataFrame,
+    columns: List[str],
+    file_path: str,
+    sheet_name: str,
+) -> pd.DataFrame:
+    """Один проход по листу: Серия/Номер как в Excel (тип «текст» сохраняет нули)."""
+    targets = [c for c in columns if _is_passport_series_col(c) or _is_passport_number_col(c)]
+    if not targets:
+        return df
+    out = df.copy()
+    try:
+        wb = openpyxl.load_workbook(file_path, read_only=True, data_only=False)
+        ws = wb[sheet_name] if sheet_name in wb.sheetnames else wb.active
+        header_row = next(ws.iter_rows(min_row=1, max_row=1, values_only=False))
+        col_index: Dict[str, int] = {}
+        for idx, cell in enumerate(header_row):
+            if cell.value is not None:
+                col_index[str(cell.value).strip()] = idx
+        target_ci: List[tuple[str, int]] = []
+        for col_name in targets:
+            ci = col_index.get(col_name)
+            if ci is not None:
+                target_ci.append((col_name, ci))
+        if not target_ci:
+            wb.close()
+            return out
+        buffers: Dict[str, List[str]] = {name: [] for name, _ in target_ci}
+        for row in ws.iter_rows(min_row=2, values_only=False):
+            cells = list(row)
+            for col_name, ci in target_ci:
+                if ci >= len(cells):
+                    buffers[col_name].append("")
+                    continue
+                cell = cells[ci]
+                if getattr(cell, "data_type", None) == "s" or isinstance(cell.value, str):
+                    buffers[col_name].append(_cell_as_text(cell.value))
+                else:
+                    buffers[col_name].append(_format_passport_value(cell.value, col_name))
+        wb.close()
+        for col_name, _ in target_ci:
+            if len(buffers[col_name]) == len(out):
+                out[col_name] = buffers[col_name]
+    except Exception:
+        return df
+    return out
+
+
+def _fix_passport_columns_in_dataframe(df: pd.DataFrame, columns: List[str]) -> pd.DataFrame:
+    out = df.copy()
+    for col in columns:
+        if _is_passport_series_col(col) or _is_passport_number_col(col):
+            out[col] = out[col].map(lambda v, c=col: _format_passport_value(v, c))
+    return out
+
+
+def _cell_as_text(value: Any) -> str:
+    """Текст ячейки без потери ведущих нулей (строка или целое из Excel)."""
+    if value is None:
+        return ""
+    if isinstance(value, float) and np.isnan(value):
+        return ""
+    if isinstance(value, str):
+        s = value.strip()
+        return "" if s.lower() in ("nan", "none", "nat") else s
+    if isinstance(value, (int, np.integer)):
+        return str(int(value))
+    if isinstance(value, (float, np.floating)):
+        if float(value) == int(value):
+            return str(int(value))
+        return str(value).strip()
+    s = str(value).strip()
+    if s.lower() in ("nan", "none", "nat"):
+        return ""
+    if re.fullmatch(r"\d+\.0+", s):
+        return s.split(".")[0]
+    return s
+
+
+def _is_passport_series_col(col_name: str) -> bool:
+    cl = col_name.lower().replace(" ", "")
+    return "удостоверение" in cl and "серия" in cl
+
+
+def _is_passport_number_col(col_name: str) -> bool:
+    cl = col_name.lower().replace(" ", "")
+    return "удостоверение" in cl and "номер" in cl and "серия" not in cl
+
+
+# Загранпаспорт: серии 82 и 83 — две цифры, без «00» впереди (не 0082/0083).
+_PASSPORT_SERIES_NO_ZFILL = frozenset({"82", "83"})
+
+
+def _format_passport_series_digits(digits: str) -> str:
+    core = digits.lstrip("0") or "0"
+    if core in _PASSPORT_SERIES_NO_ZFILL:
+        return core
+    if len(digits) <= 4:
+        return digits.zfill(4)
+    return digits
+
+
+def _format_passport_value(value: Any, col_name: str) -> str:
+    """Серия — 4 цифры (кроме 82/83), номер — 6 цифр (ведущие нули)."""
+    s = _cell_as_text(value)
+    if not s:
+        return ""
+    digits = re.sub(r"\D", "", s)
+    if not digits:
+        return s
+    if _is_passport_series_col(col_name) and len(digits) <= 4:
+        return _format_passport_series_digits(digits)
+    if _is_passport_number_col(col_name) and len(digits) <= 6:
+        return digits.zfill(6)
+    return digits if digits == re.sub(r"\s", "", s) else s
+
+
+def _overlay_passport_columns_from_workbook(
+    df: pd.DataFrame,
+    columns: List[str],
+    file_path: str,
+    sheet_name: str,
+) -> pd.DataFrame:
+    """Один проход по листу: Серия/Номер как в Excel (тип «текст» сохраняет нули)."""
+    targets = [c for c in columns if _is_passport_series_col(c) or _is_passport_number_col(c)]
+    if not targets:
+        return df
+    out = df.copy()
+    try:
+        wb = openpyxl.load_workbook(file_path, read_only=True, data_only=False)
+        ws = wb[sheet_name] if sheet_name in wb.sheetnames else wb.active
+        header_row = next(ws.iter_rows(min_row=1, max_row=1, values_only=False))
+        col_index: Dict[str, int] = {}
+        for idx, cell in enumerate(header_row):
+            if cell.value is not None:
+                col_index[str(cell.value).strip()] = idx
+        target_ci: List[tuple[str, int]] = []
+        for col_name in targets:
+            ci = col_index.get(col_name)
+            if ci is not None:
+                target_ci.append((col_name, ci))
+        if not target_ci:
+            wb.close()
+            return out
+        buffers: Dict[str, List[str]] = {name: [] for name, _ in target_ci}
+        for row in ws.iter_rows(min_row=2, values_only=False):
+            cells = list(row)
+            for col_name, ci in target_ci:
+                if ci >= len(cells):
+                    buffers[col_name].append("")
+                    continue
+                cell = cells[ci]
+                if getattr(cell, "data_type", None) == "s" or isinstance(cell.value, str):
+                    buffers[col_name].append(_cell_as_text(cell.value))
+                else:
+                    buffers[col_name].append(_format_passport_value(cell.value, col_name))
+        wb.close()
+        for col_name, _ in target_ci:
+            if len(buffers[col_name]) == len(out):
+                out[col_name] = buffers[col_name]
+    except Exception:
+        return df
+    return out
+
+
+def _fix_passport_columns_in_dataframe(df: pd.DataFrame, columns: List[str]) -> pd.DataFrame:
+    out = df.copy()
+    for col in columns:
+        if _is_passport_series_col(col) or _is_passport_number_col(col):
+            out[col] = out[col].map(lambda v, c=col: _format_passport_value(v, c))
+    return out
+
+
+def _cell_as_text(value: Any) -> str:
+    """Текст ячейки без потери ведущих нулей (строка или целое из Excel)."""
+    if value is None:
+        return ""
+    if isinstance(value, float) and np.isnan(value):
+        return ""
+    if isinstance(value, str):
+        s = value.strip()
+        return "" if s.lower() in ("nan", "none", "nat") else s
+    if isinstance(value, (int, np.integer)):
+        return str(int(value))
+    if isinstance(value, (float, np.floating)):
+        if float(value) == int(value):
+            return str(int(value))
+        return str(value).strip()
+    s = str(value).strip()
+    if s.lower() in ("nan", "none", "nat"):
+        return ""
+    if re.fullmatch(r"\d+\.0+", s):
+        return s.split(".")[0]
+    return s
+
+
+def _is_passport_series_col(col_name: str) -> bool:
+    cl = col_name.lower().replace(" ", "")
+    return "удостоверение" in cl and "серия" in cl
+
+
+def _is_passport_number_col(col_name: str) -> bool:
+    cl = col_name.lower().replace(" ", "")
+    return "удостоверение" in cl and "номер" in cl and "серия" not in cl
+
+
+# Загранпаспорт: серии 82 и 83 — две цифры, без «00» впереди (не 0082/0083).
+_PASSPORT_SERIES_NO_ZFILL = frozenset({"82", "83"})
+
+
+def _format_passport_series_digits(digits: str) -> str:
+    core = digits.lstrip("0") or "0"
+    if core in _PASSPORT_SERIES_NO_ZFILL:
+        return core
+    if len(digits) <= 4:
+        return digits.zfill(4)
+    return digits
+
+
+def _format_passport_value(value: Any, col_name: str) -> str:
+    """Серия — 4 цифры (кроме 82/83), номер — 6 цифр (ведущие нули)."""
+    s = _cell_as_text(value)
+    if not s:
+        return ""
+    digits = re.sub(r"\D", "", s)
+    if not digits:
+        return s
+    if _is_passport_series_col(col_name) and len(digits) <= 4:
+        return _format_passport_series_digits(digits)
+    if _is_passport_number_col(col_name) and len(digits) <= 6:
+        return digits.zfill(6)
+    return digits if digits == re.sub(r"\s", "", s) else s
+
+
+def _overlay_passport_columns_from_workbook(
+    df: pd.DataFrame,
+    columns: List[str],
+    file_path: str,
+    sheet_name: str,
+) -> pd.DataFrame:
+    """Один проход по листу: Серия/Номер как в Excel (тип «текст» сохраняет нули)."""
+    targets = [c for c in columns if _is_passport_series_col(c) or _is_passport_number_col(c)]
+    if not targets:
+        return df
+    out = df.copy()
+    try:
+        wb = openpyxl.load_workbook(file_path, read_only=True, data_only=False)
+        ws = wb[sheet_name] if sheet_name in wb.sheetnames else wb.active
+        header_row = next(ws.iter_rows(min_row=1, max_row=1, values_only=False))
+        col_index: Dict[str, int] = {}
+        for idx, cell in enumerate(header_row):
+            if cell.value is not None:
+                col_index[str(cell.value).strip()] = idx
+        target_ci: List[tuple[str, int]] = []
+        for col_name in targets:
+            ci = col_index.get(col_name)
+            if ci is not None:
+                target_ci.append((col_name, ci))
+        if not target_ci:
+            wb.close()
+            return out
+        buffers: Dict[str, List[str]] = {name: [] for name, _ in target_ci}
+        for row in ws.iter_rows(min_row=2, values_only=False):
+            cells = list(row)
+            for col_name, ci in target_ci:
+                if ci >= len(cells):
+                    buffers[col_name].append("")
+                    continue
+                cell = cells[ci]
+                if getattr(cell, "data_type", None) == "s" or isinstance(cell.value, str):
+                    buffers[col_name].append(_cell_as_text(cell.value))
+                else:
+                    buffers[col_name].append(_format_passport_value(cell.value, col_name))
+        wb.close()
+        for col_name, _ in target_ci:
+            if len(buffers[col_name]) == len(out):
+                out[col_name] = buffers[col_name]
+    except Exception:
+        return df
+    return out
+
+
+def _fix_passport_columns_in_dataframe(df: pd.DataFrame, columns: List[str]) -> pd.DataFrame:
+    out = df.copy()
+    for col in columns:
+        if _is_passport_series_col(col) or _is_passport_number_col(col):
+            out[col] = out[col].map(lambda v, c=col: _format_passport_value(v, c))
+    return out
+
+
+def _cell_as_text(value: Any) -> str:
+    """Текст ячейки без потери ведущих нулей (строка или целое из Excel)."""
+    if value is None:
+        return ""
+    if isinstance(value, float) and np.isnan(value):
+        return ""
+    if isinstance(value, str):
+        s = value.strip()
+        return "" if s.lower() in ("nan", "none", "nat") else s
+    if isinstance(value, (int, np.integer)):
+        return str(int(value))
+    if isinstance(value, (float, np.floating)):
+        if float(value) == int(value):
+            return str(int(value))
+        return str(value).strip()
+    s = str(value).strip()
+    if s.lower() in ("nan", "none", "nat"):
+        return ""
+    if re.fullmatch(r"\d+\.0+", s):
+        return s.split(".")[0]
+    return s
+
+
+def _is_passport_series_col(col_name: str) -> bool:
+    cl = col_name.lower().replace(" ", "")
+    return "удостоверение" in cl and "серия" in cl
+
+
+def _is_passport_number_col(col_name: str) -> bool:
+    cl = col_name.lower().replace(" ", "")
+    return "удостоверение" in cl and "номер" in cl and "серия" not in cl
+
+
+# Загранпаспорт: серии 82 и 83 — две цифры, без «00» впереди (не 0082/0083).
+_PASSPORT_SERIES_NO_ZFILL = frozenset({"82", "83"})
+
+
+def _format_passport_series_digits(digits: str) -> str:
+    core = digits.lstrip("0") or "0"
+    if core in _PASSPORT_SERIES_NO_ZFILL:
+        return core
+    if len(digits) <= 4:
+        return digits.zfill(4)
+    return digits
+
+
+def _format_passport_value(value: Any, col_name: str) -> str:
+    """Серия — 4 цифры (кроме 82/83), номер — 6 цифр (ведущие нули)."""
+    s = _cell_as_text(value)
+    if not s:
+        return ""
+    digits = re.sub(r"\D", "", s)
+    if not digits:
+        return s
+    if _is_passport_series_col(col_name) and len(digits) <= 4:
+        return _format_passport_series_digits(digits)
+    if _is_passport_number_col(col_name) and len(digits) <= 6:
+        return digits.zfill(6)
+    return digits if digits == re.sub(r"\s", "", s) else s
+
+
+def _overlay_passport_columns_from_workbook(
+    df: pd.DataFrame,
+    columns: List[str],
+    file_path: str,
+    sheet_name: str,
+) -> pd.DataFrame:
+    """Один проход по листу: Серия/Номер как в Excel (тип «текст» сохраняет нули)."""
+    targets = [c for c in columns if _is_passport_series_col(c) or _is_passport_number_col(c)]
+    if not targets:
+        return df
+    out = df.copy()
+    try:
+        wb = openpyxl.load_workbook(file_path, read_only=True, data_only=False)
+        ws = wb[sheet_name] if sheet_name in wb.sheetnames else wb.active
+        header_row = next(ws.iter_rows(min_row=1, max_row=1, values_only=False))
+        col_index: Dict[str, int] = {}
+        for idx, cell in enumerate(header_row):
+            if cell.value is not None:
+                col_index[str(cell.value).strip()] = idx
+        target_ci: List[tuple[str, int]] = []
+        for col_name in targets:
+            ci = col_index.get(col_name)
+            if ci is not None:
+                target_ci.append((col_name, ci))
+        if not target_ci:
+            wb.close()
+            return out
+        buffers: Dict[str, List[str]] = {name: [] for name, _ in target_ci}
+        for row in ws.iter_rows(min_row=2, values_only=False):
+            cells = list(row)
+            for col_name, ci in target_ci:
+                if ci >= len(cells):
+                    buffers[col_name].append("")
+                    continue
+                cell = cells[ci]
+                if getattr(cell, "data_type", None) == "s" or isinstance(cell.value, str):
+                    buffers[col_name].append(_cell_as_text(cell.value))
+                else:
+                    buffers[col_name].append(_format_passport_value(cell.value, col_name))
+        wb.close()
+        for col_name, _ in target_ci:
+            if len(buffers[col_name]) == len(out):
+                out[col_name] = buffers[col_name]
+    except Exception:
+        return df
+    return out
+
+
+def _fix_passport_columns_in_dataframe(df: pd.DataFrame, columns: List[str]) -> pd.DataFrame:
+    out = df.copy()
+    for col in columns:
+        if _is_passport_series_col(col) or _is_passport_number_col(col):
+            out[col] = out[col].map(lambda v, c=col: _format_passport_value(v, c))
+    return out
+
+
 def _sanitize_col_name(name: str) -> str:
     """Sanitize column name for use as SQLite column name."""
     # Replace dots and special chars with underscore
     return name.replace('.', '_').replace(' ', '_').replace('(', '').replace(')', '').replace('-', '_')
 
 
+def _register_connection(conn: sqlite3.Connection) -> None:
+    with _conn_lock:
+        _open_connections.append(conn)
+
+
+def close_all_connections() -> None:
+    """Закрыть все соединения с main_db.sqlite (перед пересборкой файла)."""
+    with _conn_lock:
+        for conn in list(_open_connections):
+            try:
+                conn.close()
+            except Exception:
+                pass
+        _open_connections.clear()
+    gc.collect()
+
+
+def _remove_path_with_retry(path: str, attempts: int = 8) -> None:
+    if not os.path.isfile(path):
+        return
+    last_err: Optional[Exception] = None
+    for _ in range(attempts):
+        try:
+            os.remove(path)
+            return
+        except OSError as exc:
+            last_err = exc
+            time.sleep(0.35)
+    if last_err:
+        raise last_err
+
+
 def _get_db_connection() -> sqlite3.Connection:
     """Get a connection to the main database with custom Unicode LOWER function."""
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(_db_path(), timeout=60.0)
     conn.row_factory = sqlite3.Row
-    # Register custom LOWER function that handles Unicode/Cyrillic
     conn.create_function("LOWER", 1, lambda x: x.lower() if x else None)
+    _register_connection(conn)
     return conn
 
 
-def load_main_db(file_path: Optional[str] = None, sheet_name: Optional[str] = None) -> Dict[str, Any]:
-    """Load an Excel file into SQLite database."""
+def load_main_db(
+    file_path: Optional[str] = None,
+    sheet_name: Optional[str] = None,
+    *,
+    set_active: bool = False,
+) -> Dict[str, Any]:
+    """Load an Excel file into a new SQLite instance (не перезаписывает предыдущие)."""
     global _cache
 
-    if file_path is None:
-        file_path = _detect_main_db_file()
-        if file_path is None:
-            return {"loaded": False, "error": "No Excel file found in upload directory"}
+    if not file_path or not str(file_path).strip():
+        return {
+            "loaded": False,
+            "error": "Укажите путь к файлу Excel (выгрузка 1С). Автопоиск отключён — выберите файл вручную.",
+        }
+
+    file_path = os.path.abspath(str(file_path).strip())
+
+    os.makedirs(MAIN_DB_DIR, exist_ok=True)
+
+    if not _path_under_main_db_upload(file_path):
+        return {
+            "loaded": False,
+            "error": (
+                "Основная База загружается только из папки upload проекта: "
+                f"{MAIN_DB_DIR}"
+            ),
+        }
 
     if not os.path.exists(file_path):
-        return {"loaded": False, "error": f"File not found: {file_path}"}
+        return {"loaded": False, "error": f"Файл не найден: {file_path}"}
+
+    if not file_path.lower().endswith((".xlsx", ".xlsm")):
+        return {"loaded": False, "error": "Нужен файл Excel (.xlsx или .xlsm)"}
+
+    close_all_connections()
+
+    registry.migrate_legacy_if_needed()
+    instance_id = registry.new_instance_id()
+    target_db, build_path, target_meta = registry.paths_for_load(instance_id)
 
     try:
-        # Read Excel into DataFrame (temporary, will be freed)
-        df = pd.read_excel(file_path, sheet_name=sheet_name or 0, engine='openpyxl')
-
         if sheet_name is None:
             xl = pd.ExcelFile(file_path, engine='openpyxl')
             actual_sheet = xl.sheet_names[0]
@@ -144,7 +819,16 @@ def load_main_db(file_path: Optional[str] = None, sheet_name: Optional[str] = No
         else:
             actual_sheet = sheet_name
 
+        df = pd.read_excel(
+            file_path,
+            sheet_name=actual_sheet,
+            engine='openpyxl',
+            dtype=object,
+        )
+
         columns = list(df.columns)
+        df = _overlay_passport_columns_from_workbook(df, columns, file_path, actual_sheet)
+        df = _fix_passport_columns_in_dataframe(df, columns)
         key_columns = _match_key_columns(columns)
         col_count = len(columns)
 
@@ -160,12 +844,10 @@ def load_main_db(file_path: Optional[str] = None, sheet_name: Optional[str] = No
                 counter += 1
             col_mapping[col] = sanitized
 
-        # Remove existing database
-        if os.path.exists(DB_PATH):
-            os.remove(DB_PATH)
+        if os.path.exists(build_path):
+            _remove_path_with_retry(build_path)
 
-        # Create SQLite database using pandas to_sql (much faster)
-        conn = sqlite3.connect(DB_PATH)
+        conn = sqlite3.connect(build_path)
 
         # Sanitize column names for SQLite
         col_mapping = {}
@@ -200,8 +882,15 @@ def load_main_db(file_path: Optional[str] = None, sheet_name: Optional[str] = No
         conn.commit()
         conn.close()
 
+        close_all_connections()
+        if os.path.exists(target_db):
+            _remove_path_with_retry(target_db)
+        os.replace(build_path, target_db)
+
         # Save metadata
         meta = {
+            "instance_id": instance_id,
+            "source_excel": file_path,
             "file_path": file_path,
             "sheet_name": actual_sheet,
             "columns": columns,
@@ -211,24 +900,43 @@ def load_main_db(file_path: Optional[str] = None, sheet_name: Optional[str] = No
             "row_count": row_count,
             "col_count": col_count,
         }
-        with open(META_PATH, 'w', encoding='utf-8') as f:
+        with open(target_meta, 'w', encoding='utf-8') as f:
             json.dump(meta, f, ensure_ascii=False, indent=2)
 
-        # Update cache
-        _cache = {
-            "loaded": True,
-            "file_path": file_path,
-            "sheet_name": actual_sheet,
-            "columns": columns,
-            "key_columns": key_columns,
-            "col_mapping": col_mapping,
-            "loaded_at": meta["loaded_at"],
-            "row_count": row_count,
-            "col_count": col_count,
-        }
+        reg_info = registry.register_instance(
+            instance_id,
+            source_excel=file_path,
+            meta=meta,
+            set_active=set_active or registry.get_active_id() is None,
+        )
+
+        if reg_info.get("is_active"):
+            _cache = {
+                "loaded": True,
+                "file_path": file_path,
+                "sheet_name": actual_sheet,
+                "columns": columns,
+                "key_columns": key_columns,
+                "col_mapping": col_mapping,
+                "loaded_at": meta["loaded_at"],
+                "row_count": row_count,
+                "col_count": col_count,
+            }
+            try:
+                import tickets_costs
+
+                tickets_costs._main_employees_cache["raw_df"] = None
+                tickets_costs._main_employees_cache["mtime"] = 0.0
+            except Exception:
+                pass
+        else:
+            _cache["loaded"] = _cache.get("loaded", False)
 
         return {
             "loaded": True,
+            "instance_id": instance_id,
+            "is_active": reg_info.get("is_active", False),
+            "source_excel": file_path,
             "file_path": file_path,
             "sheet_name": actual_sheet,
             "columns": columns,
@@ -236,9 +944,19 @@ def load_main_db(file_path: Optional[str] = None, sheet_name: Optional[str] = No
             "row_count": row_count,
             "col_count": col_count,
             "loaded_at": meta["loaded_at"],
+            "message": (
+                f"Создана база «{os.path.basename(file_path)}» ({row_count:,} строк). "
+                + ("Она активна." if reg_info.get("is_active") else "Нажмите «Задействовать» в настройках.")
+            ).replace(",", " "),
         }
 
     except Exception as e:
+        close_all_connections()
+        if os.path.exists(build_path):
+            try:
+                _remove_path_with_retry(build_path)
+            except Exception:
+                pass
         return {"loaded": False, "error": f"Failed to load file: {str(e)}"}
 
 
@@ -247,13 +965,15 @@ def _load_meta_from_disk():
     global _cache
     if _cache["loaded"]:
         return True
-    if os.path.exists(META_PATH) and os.path.exists(DB_PATH):
+    meta_path = _meta_path()
+    db_path = _db_path()
+    if os.path.exists(meta_path) and os.path.exists(db_path):
         try:
-            with open(META_PATH, 'r', encoding='utf-8') as f:
+            with open(meta_path, 'r', encoding='utf-8') as f:
                 meta = json.load(f)
             _cache = {
                 "loaded": True,
-                "file_path": meta["file_path"],
+                "file_path": meta.get("source_excel") or meta["file_path"],
                 "sheet_name": meta["sheet_name"],
                 "columns": meta["columns"],
                 "key_columns": meta["key_columns"],
@@ -274,18 +994,78 @@ def is_loaded() -> bool:
     return _load_meta_from_disk()
 
 
+def invalidate_cache() -> None:
+    """Сбросить кэш после изменения SQLite/meta (например, справочники)."""
+    global _cache
+    _cache["loaded"] = False
+    _load_meta_from_disk()
+
+
+def invalidate_cache() -> None:
+    """Сбросить кэш после изменения SQLite/meta (например, справочники)."""
+    global _cache
+    _cache["loaded"] = False
+    _load_meta_from_disk()
+
+
+def invalidate_cache() -> None:
+    """Сбросить кэш после изменения SQLite/meta (например, справочники)."""
+    global _cache
+    _cache["loaded"] = False
+    _load_meta_from_disk()
+
+
+def invalidate_cache() -> None:
+    """Сбросить кэш после изменения SQLite/meta (например, справочники)."""
+    global _cache
+    _cache["loaded"] = False
+    _load_meta_from_disk()
+
+
+def invalidate_cache() -> None:
+    """Сбросить кэш после изменения SQLite/meta (например, справочники)."""
+    global _cache
+    _cache["loaded"] = False
+    _load_meta_from_disk()
+
+
 def get_status() -> Dict[str, Any]:
+    registry.migrate_legacy_if_needed()
+    detected = _detect_main_db_file()
+    active_id = registry.get_active_id()
+    base = {
+        "data_dir": MAIN_DB_DIR,
+        "upload_dir": MAIN_DB_DIR,
+        "search_dirs": main_db_search_dirs(),
+        "detected_excel": detected,
+        "active_instance_id": active_id,
+        "instances": registry.list_instances(),
+    }
     if not is_loaded():
-        return {"loaded": False}
+        hint = detected or ""
+        return {
+            "loaded": False,
+            "message": (
+                f"Загрузите базу в Настройках → БАЗА или положите .xlsx в {MAIN_DB_DIR}."
+                + (f" Найден в upload: {os.path.basename(hint)}" if hint else "")
+            ),
+            **base,
+        }
+    src = _cache["file_path"]
     return {
         "loaded": True,
-        "file_path": _cache["file_path"],
+        "file_path": src,
+        "source_excel": src,
+        "file_name": os.path.basename(src) if src else "",
         "sheet_name": _cache["sheet_name"],
         "columns": _cache["columns"],
         "key_columns": _cache["key_columns"],
         "row_count": _cache["row_count"],
         "col_count": _cache["col_count"],
         "loaded_at": _cache["loaded_at"],
+        "active_instance_id": active_id,
+        "message": f"Активная база: {os.path.basename(src)} ({_cache['row_count']:,} строк)".replace(",", " "),
+        **base,
     }
 
 
@@ -390,8 +1170,9 @@ def get_data(
             for col_idx, col_name in enumerate(display_cols):
                 value = row[col_idx]
                 json_value = _convert_value_for_json(value) if value is not None else None
-                # Try to detect number
-                if json_value is not None and isinstance(json_value, str):
+                if _is_passport_series_col(col_name) or _is_passport_number_col(col_name):
+                    json_value = _format_passport_value(value, col_name) or None
+                elif json_value is not None and isinstance(json_value, str):
                     try:
                         if '.' in json_value:
                             json_value = float(json_value)
@@ -480,7 +1261,9 @@ def get_stats() -> Dict[str, Any]:
                 })
 
         stats["all_columns"] = all_col_stats
-        stats["memory_usage_mb"] = round(os.path.getsize(DB_PATH) / (1024 * 1024), 2)
+        db_path = _db_path()
+        if os.path.isfile(db_path):
+            stats["memory_usage_mb"] = round(os.path.getsize(db_path) / (1024 * 1024), 2)
 
         return stats
     finally:
@@ -519,15 +1302,10 @@ def search_advanced(
 
 
 def clear_cache() -> Dict[str, Any]:
+    """Сброс только кэша в памяти (файлы instances не удаляются)."""
     global _cache
     file_path = _cache.get("file_path")
-
-    # Delete SQLite database
-    if os.path.exists(DB_PATH):
-        os.remove(DB_PATH)
-    if os.path.exists(META_PATH):
-        os.remove(META_PATH)
-
+    close_all_connections()
     _cache = {
         "loaded": False,
         "file_path": None,
@@ -540,3 +1318,81 @@ def clear_cache() -> Dict[str, Any]:
         "col_count": 0,
     }
     return {"cleared": True, "previous_file": file_path}
+
+
+def activate_instance(instance_id: str) -> Dict[str, Any]:
+    global _cache
+    result = registry.activate_instance(instance_id)
+    if not result.get("ok"):
+        return result
+    close_all_connections()
+    _cache["loaded"] = False
+    if _load_meta_from_disk():
+        return {**get_status(), "activated": instance_id}
+    return {"ok": True, "activated": instance_id, "loaded": False}
+
+
+def list_instances() -> Dict[str, Any]:
+    registry.migrate_legacy_if_needed()
+    return {"instances": registry.list_instances(), "active_id": registry.get_active_id()}
+
+
+def delete_instance(instance_id: str) -> Dict[str, Any]:
+    global _cache
+    active = registry.get_active_id()
+    result = registry.delete_instance(instance_id)
+    close_all_connections()
+    if active == instance_id:
+        _cache["loaded"] = False
+        _load_meta_from_disk()
+    return result
+
+
+def verify_instance(instance_id: str) -> Dict[str, Any]:
+    db = registry.instance_db_path(instance_id)
+    meta_path = registry.instance_meta_path(instance_id)
+    if not os.path.isfile(db):
+        return {"ok": False, "error": "База не найдена"}
+    meta = {}
+    if os.path.isfile(meta_path):
+        with open(meta_path, "r", encoding="utf-8") as f:
+            meta = json.load(f)
+    conn = sqlite3.connect(db, timeout=30.0)
+    try:
+        row_count = conn.execute("SELECT COUNT(*) FROM employees").fetchone()[0]
+        col_count = len(meta.get("columns") or [])
+        return {
+            "ok": True,
+            "instance_id": instance_id,
+            "row_count": row_count,
+            "col_count": col_count,
+            "file_name": os.path.basename(meta.get("source_excel") or ""),
+            "loaded_at": meta.get("loaded_at"),
+            "size_mb": round(os.path.getsize(db) / (1024 * 1024), 2),
+        }
+    finally:
+        conn.close()
+
+
+def export_instance_to_excel(instance_id: str) -> Dict[str, Any]:
+    db = registry.instance_db_path(instance_id)
+    if not os.path.isfile(db):
+        return {"ok": False, "error": "База не найдена"}
+    meta = {}
+    meta_path = registry.instance_meta_path(instance_id)
+    if os.path.isfile(meta_path):
+        with open(meta_path, "r", encoding="utf-8") as f:
+            meta = json.load(f)
+    base_name = os.path.basename(meta.get("source_excel") or instance_id)
+    if base_name.lower().endswith((".xlsx", ".xlsm")):
+        base_name = os.path.splitext(base_name)[0]
+    out_name = f"{base_name}_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+    os.makedirs(registry.EXPORTS_DIR, exist_ok=True)
+    out_path = os.path.join(registry.EXPORTS_DIR, out_name)
+    conn = sqlite3.connect(db, timeout=60.0)
+    try:
+        df = pd.read_sql("SELECT * FROM employees", conn)
+        df.to_excel(out_path, index=False, engine="openpyxl")
+    finally:
+        conn.close()
+    return {"ok": True, "export_path": out_path, "file_name": out_name}

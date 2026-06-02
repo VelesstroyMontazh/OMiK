@@ -39,9 +39,6 @@ export default function CellContextMenu() {
     deleteColumn,
     mergeCells,
     unmergeCells,
-    selectedCell,
-    sheets,
-    activeSheetIndex,
   } = useExcelStore()
 
   const handleClose = useCallback(() => {

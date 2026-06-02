@@ -2,6 +2,7 @@
 
 import React, { useCallback, useEffect, useState } from 'react'
 import { useExcelApi } from '@/hooks/use-excel-api'
+import FilterableDataTable from '@/components/excel/FilterableDataTable'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
@@ -694,43 +695,35 @@ export default function ReportsPanel() {
   ) => {
     if (!data || data.length === 0) return null
     const maxVal = Math.max(...data.map((d) => Number(d[valueKey]) || 0))
+    const rows = data.map((item) => {
+      const count = Number(item[valueKey]) || 0
+      const pct = maxVal > 0 ? (count / (reportData?.total || maxVal)) * 100 : 0
+      return {
+        name: String(item[labelKey] ?? ''),
+        count: formatNumber(count),
+        pct: `${pct.toFixed(1)}%`,
+      }
+    })
     return (
-      <Card className="py-3 gap-2">
+      <Card className="py-3 gap-2 overflow-hidden">
         <CardHeader className="pb-0 pt-0 px-4">
           <div className="flex items-center gap-2">
             <ArrowUpDown className="h-4 w-4 text-amber-600" />
             <CardTitle className="text-sm font-semibold text-gray-700">{title}</CardTitle>
           </div>
         </CardHeader>
-        <CardContent className="pb-0 px-4">
-          <div className="max-h-64 overflow-y-auto">
-            <table className="w-full text-[11px]">
-              <thead>
-                <tr className="border-b border-gray-200">
-                  <th className="text-left py-1.5 px-2 font-semibold text-gray-500">№</th>
-                  <th className="text-left py-1.5 px-2 font-semibold text-gray-500">Наименование</th>
-                  <th className="text-right py-1.5 px-2 font-semibold text-gray-500">Кол-во</th>
-                  <th className="text-right py-1.5 px-2 font-semibold text-gray-500 w-16">Доля</th>
-                </tr>
-              </thead>
-              <tbody>
-                {data.map((item, idx) => {
-                  const count = Number(item[valueKey]) || 0
-                  const pct = maxVal > 0 ? (count / (reportData?.total || maxVal)) * 100 : 0
-                  return (
-                    <tr key={idx} className="border-b border-gray-50 hover:bg-amber-50/50">
-                      <td className="py-1 px-2 text-gray-400">{idx + 1}</td>
-                      <td className="py-1 px-2 text-gray-700 truncate max-w-[200px]" title={String(item[labelKey])}>
-                        {String(item[labelKey])}
-                      </td>
-                      <td className="py-1 px-2 text-right font-medium text-gray-800">{formatNumber(count)}</td>
-                      <td className="py-1 px-2 text-right text-gray-500">{pct.toFixed(1)}%</td>
-                    </tr>
-                  )
-                })}
-              </tbody>
-            </table>
-          </div>
+        <CardContent className="pb-0 px-0">
+          <FilterableDataTable
+            columns={[
+              { key: 'name', title: 'Наименование' },
+              { key: 'count', title: 'Кол-во' },
+              { key: 'pct', title: 'Доля' },
+            ]}
+            rows={rows}
+            editTitle={title}
+            maxHeight="max-h-64"
+            headerVariant="amber"
+          />
         </CardContent>
       </Card>
     )

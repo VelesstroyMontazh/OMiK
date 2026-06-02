@@ -93,10 +93,8 @@ export default function FindReplaceDialog() {
   }, [currentResultIndex, results, replaceText, findNext])
 
   const handleReplaceAll = useCallback(() => {
-    let count = 0
     for (const result of results) {
       useExcelStore.getState().setCellValue(result.row, result.col, replaceText)
-      count++
     }
     setResults([])
     setCurrentResultIndex(-1)

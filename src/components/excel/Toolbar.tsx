@@ -1,8 +1,8 @@
 'use client'
 
 import React, { useCallback } from 'react'
-import { useExcelStore, getSelectedRangeBounds, cellRef, colToLetter } from '@/store/excel-store'
-import type { CellStyle, NumberFormat, SelectionRange } from '@/store/excel-store'
+import { useExcelStore, getSelectedRangeBounds, colToLetter } from '@/store/excel-store'
+import type { CellStyle, NumberFormat } from '@/store/excel-store'
 import { useExcelApi } from '@/hooks/use-excel-api'
 import { Button } from '@/components/ui/button'
 import {
@@ -37,8 +37,6 @@ import {
   AlignVerticalJustifyEnd,
   WrapText,
   TableCellsMerge,
-  Plus,
-  Minus,
   ArrowUpDown,
   ArrowDownUp,
   Filter,
@@ -118,7 +116,6 @@ function ToolbarGroup({ children }: { children: React.ReactNode }) {
 export default function Toolbar() {
   const {
     selectedCell,
-    selectedRange,
     sheets,
     activeSheetIndex,
     activeFile,
@@ -141,7 +138,6 @@ export default function Toolbar() {
     setSidebarOpen,
     setSidebarTab,
     setNumberFormat,
-    setIsLoading,
     setError,
   } = useExcelStore()
 
@@ -315,7 +311,7 @@ export default function Toolbar() {
     try {
       await api.downloadFile(activeFile.id)
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Ошибка скачивания')
+      setError(err instanceof Error ? err.message : 'Ошибка экспорта в Excel')
     }
   }, [activeFile, api, setError])
 
@@ -330,7 +326,7 @@ export default function Toolbar() {
         <ToolbarButton icon={FilePlus} label="Новый" onClick={handleNew} />
         <ToolbarButton icon={FolderOpen} label="Открыть" onClick={() => { setSidebarOpen(true); setSidebarTab('files') }} />
         <ToolbarButton icon={Save} label="Сохранить" onClick={() => {}} disabled={!hasActiveFile} />
-        <ToolbarButton icon={Download} label="Скачать" onClick={handleDownload} disabled={!hasActiveFile} />
+        <ToolbarButton icon={Download} label="Экспорт в Excel" onClick={handleDownload} disabled={!hasActiveFile} />
       </ToolbarGroup>
 
       <Separator orientation="vertical" className="h-6" />
