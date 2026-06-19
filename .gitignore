@@ -1,49 +1,63 @@
 ```
-# Excel files and downloads
-OMiK/download/
-
-# Environment variables
-.env
-.env.local
-*.env.*
-
-# Logs
-*.log
-
-# Temporary files
-*.tmp
-
-# Editor/IDE
-.vscode/
-.idea/
-
-# Python
+# Dependencies
+.venv/
+venv/
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
 
-# Compressed files
-*.zip
-*.gz
-*.tar
-*.tgz
-*.bz2
-*.xz
-*.7z
-*.rar
-*.zst
-*.lz4
-*.lzh
-*.cab
-*.arj
-*.rpm
-*.deb
-*.Z
-*.lz
-*.lzo
-*.tar.gz
-*.tar.bz2
-*.tar.xz
-*.tar.zst
+# Environment variables
+.env
+.env.local
+.env.*
+
+# IDE specific
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log
+
+# OS generated
+.DS_Store
+Thumbs.db
+
+# Python specific
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Excel files (if they're generated/temporary)
+*.xlsx
+*.xls
+
+# Coverage reports
+.coverage
+htmlcov/
+.coverage.*
+.coverage.xml
 ```
