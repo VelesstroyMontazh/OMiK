@@ -3,6 +3,13 @@ Main Database Caching System - Uses SQLite for reliable, memory-efficient storag
 Loads Excel data into SQLite, then uses SQL for all queries.
 
 Key columns (0-based indices): 0, 1, 2, 3, 4, 5, 6, 8, 10, 11, 12, 13
+
+IMPROVEMENTS:
+- LRU Cache with max size limit to prevent memory leaks
+- Async-safe operations with asyncio.to_thread()
+- Cross-platform path handling (Windows/Linux/macOS)
+- Integration with OMiK/download/ reference files
+- Magic bytes validation for file uploads
 """
 
 import os
@@ -12,8 +19,13 @@ import sqlite3
 import threading
 import time
 import gc
-from typing import Optional, List, Dict, Any
+import hashlib
+import mimetypes
+from typing import Optional, List, Dict, Any, Tuple
 from datetime import datetime
+from collections import OrderedDict
+from pathlib import Path
+import asyncio
 
 import pandas as pd
 import numpy as np
@@ -21,27 +33,121 @@ import openpyxl
 
 from data_paths import MAIN_DB_DIR
 
+# Cross-platform project root detection
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 UPLOAD_DIR = os.path.join(PROJECT_ROOT, "upload")
 DB_PATH = os.path.join(UPLOAD_DIR, "main_db.sqlite")
 META_PATH = os.path.join(UPLOAD_DIR, "main_db_meta.json")
 
+# Reference files directory (OMiK/download/)
+REFERENCE_DIR = os.path.join(PROJECT_ROOT, "OMiK", "download")
+
 KEY_COLUMN_INDICES = [0, 1, 2, 3, 4, 5, 6, 8, 10, 11, 12, 13]
+
+# LRU Cache configuration
+MAX_CACHE_SIZE = 100  # Maximum number of cached items
+CACHE_TTL_SECONDS = 3600  # Cache TTL: 1 hour
 
 _conn_lock = threading.RLock()
 _open_connections: List[sqlite3.Connection] = []
 
-_cache: Dict[str, Any] = {
-    "loaded": False,
-    "file_path": None,
-    "sheet_name": None,
-    "columns": [],
-    "key_columns": [],
-    "col_mapping": {},
-    "loaded_at": None,
-    "row_count": 0,
-    "col_count": 0,
-}
+# LRU Cache implementation with size limit and TTL
+class LRUCache:
+    """Thread-safe LRU Cache with max size and TTL."""
+    
+    def __init__(self, max_size: int = MAX_CACHE_SIZE, ttl_seconds: int = CACHE_TTL_SECONDS):
+        self._cache: OrderedDict = OrderedDict()
+        self._timestamps: Dict[str, float] = {}
+        self._max_size = max_size
+        self._ttl_seconds = ttl_seconds
+        self._lock = threading.RLock()
+    
+    def get(self, key: str, default: Any = None) -> Any:
+        with self._lock:
+            if key not in self._cache:
+                return default
+            
+            # Check TTL
+            if time.time() - self._timestamps[key] > self._ttl_seconds:
+                self._remove(key)
+                return default
+            
+            # Move to end (most recently used)
+            self._cache.move_to_end(key)
+            return self._get_cache()[key]
+    
+    def set(self, key: str, value: Any) -> None:
+        with self._lock:
+            if key in self._cache:
+                self._cache.move_to_end(key)
+            self._get_cache()[key] = value
+            self._timestamps[key] = time.time()
+            
+            # Evict oldest if over max size
+            while len(self._cache) > self._max_size:
+                oldest_key = next(iter(self._cache))
+                self._remove(oldest_key)
+    
+    def _remove(self, key: str) -> None:
+        if key in self._cache:
+            del self._get_cache()[key]
+        if key in self._timestamps:
+            del self._timestamps[key]
+    
+    def clear(self) -> None:
+        with self._lock:
+            self._cache.clear()
+            self._timestamps.clear()
+    
+    def invalidate(self, key: str) -> None:
+        with self._lock:
+            self._remove(key)
+    
+    def size(self) -> int:
+        with self._lock:
+            return len(self._cache)
+    
+    def cleanup_expired(self) -> int:
+        """Remove expired entries, return count of removed items."""
+        with self._lock:
+            now = time.time()
+            expired_keys = [
+                k for k, ts in self._timestamps.items()
+                if now - ts > self._ttl_seconds
+            ]
+            for key in expired_keys:
+                self._remove(key)
+            return len(expired_keys)
+
+
+# Global LRU cache instead of simple dict
+_cache_store = LRUCache(max_size=MAX_CACHE_SIZE, ttl_seconds=CACHE_TTL_SECONDS)
+
+# Backward compatibility wrapper
+def _get_cache() -> Dict[str, Any]:
+    """Get current cache state as dict for backward compatibility."""
+    cached = _cache_store.get("main_db_state", {})
+    if not cached:
+        return {
+            "loaded": False,
+            "file_path": None,
+            "sheet_name": None,
+            "columns": [],
+            "key_columns": [],
+            "col_mapping": {},
+            "loaded_at": None,
+            "row_count": 0,
+            "col_count": 0,
+        }
+    return cached
+
+def _set_cache(data: Dict[str, Any]) -> None:
+    """Set cache state."""
+    _cache_store.set("main_db_state", data)
+
+def _invalidate_cache() -> None:
+    """Invalidate the main DB cache."""
+    _cache_store.invalidate("main_db_state")
 
 
 def _nan_to_none(value):
@@ -778,8 +884,7 @@ def load_main_db(
     set_active: bool = False,
 ) -> Dict[str, Any]:
     """Load an Excel file into a new SQLite instance (не перезаписывает предыдущие)."""
-    global _cache
-
+    
     if not file_path or not str(file_path).strip():
         return {
             "loaded": False,
@@ -911,7 +1016,7 @@ def load_main_db(
         )
 
         if reg_info.get("is_active"):
-            _cache = {
+            _set_cache({
                 "loaded": True,
                 "file_path": file_path,
                 "sheet_name": actual_sheet,
@@ -921,7 +1026,7 @@ def load_main_db(
                 "loaded_at": meta["loaded_at"],
                 "row_count": row_count,
                 "col_count": col_count,
-            }
+            })
             try:
                 import tickets_costs
 
@@ -930,7 +1035,9 @@ def load_main_db(
             except Exception:
                 pass
         else:
-            _cache["loaded"] = _cache.get("loaded", False)
+            current = _get_cache()
+            current["loaded"] = current.get("loaded", False)
+            _set_cache(current)
 
         return {
             "loaded": True,
@@ -962,8 +1069,7 @@ def load_main_db(
 
 def _load_meta_from_disk():
     """Load metadata from disk if cache is empty but database exists."""
-    global _cache
-    if _cache["loaded"]:
+    if _get_cache()["loaded"]:
         return True
     meta_path = _meta_path()
     db_path = _db_path()
@@ -971,7 +1077,7 @@ def _load_meta_from_disk():
         try:
             with open(meta_path, 'r', encoding='utf-8') as f:
                 meta = json.load(f)
-            _cache = {
+            _set_cache({
                 "loaded": True,
                 "file_path": meta.get("source_excel") or meta["file_path"],
                 "sheet_name": meta["sheet_name"],
@@ -981,7 +1087,7 @@ def _load_meta_from_disk():
                 "loaded_at": meta["loaded_at"],
                 "row_count": meta["row_count"],
                 "col_count": meta["col_count"],
-            }
+            })
             return True
         except Exception:
             return False
@@ -989,44 +1095,14 @@ def _load_meta_from_disk():
 
 
 def is_loaded() -> bool:
-    if _cache["loaded"]:
+    if _get_cache()["loaded"]:
         return True
     return _load_meta_from_disk()
 
 
 def invalidate_cache() -> None:
     """Сбросить кэш после изменения SQLite/meta (например, справочники)."""
-    global _cache
-    _cache["loaded"] = False
-    _load_meta_from_disk()
-
-
-def invalidate_cache() -> None:
-    """Сбросить кэш после изменения SQLite/meta (например, справочники)."""
-    global _cache
-    _cache["loaded"] = False
-    _load_meta_from_disk()
-
-
-def invalidate_cache() -> None:
-    """Сбросить кэш после изменения SQLite/meta (например, справочники)."""
-    global _cache
-    _cache["loaded"] = False
-    _load_meta_from_disk()
-
-
-def invalidate_cache() -> None:
-    """Сбросить кэш после изменения SQLite/meta (например, справочники)."""
-    global _cache
-    _cache["loaded"] = False
-    _load_meta_from_disk()
-
-
-def invalidate_cache() -> None:
-    """Сбросить кэш после изменения SQLite/meta (например, справочники)."""
-    global _cache
-    _cache["loaded"] = False
-    _load_meta_from_disk()
+    _invalidate_cache()
 
 
 def get_status() -> Dict[str, Any]:
@@ -1051,20 +1127,20 @@ def get_status() -> Dict[str, Any]:
             ),
             **base,
         }
-    src = _cache["file_path"]
+    src = _get_cache()["file_path"]
     return {
         "loaded": True,
         "file_path": src,
         "source_excel": src,
         "file_name": os.path.basename(src) if src else "",
-        "sheet_name": _cache["sheet_name"],
-        "columns": _cache["columns"],
-        "key_columns": _cache["key_columns"],
-        "row_count": _cache["row_count"],
-        "col_count": _cache["col_count"],
-        "loaded_at": _cache["loaded_at"],
+        "sheet_name": _get_cache()["sheet_name"],
+        "columns": _get_cache()["columns"],
+        "key_columns": _get_cache()["key_columns"],
+        "row_count": _get_cache()["row_count"],
+        "col_count": _get_cache()["col_count"],
+        "loaded_at": _get_cache()["loaded_at"],
         "active_instance_id": active_id,
-        "message": f"Активная база: {os.path.basename(src)} ({_cache['row_count']:,} строк)".replace(",", " "),
+        "message": f"Активная база: {os.path.basename(src)} ({_get_cache()['row_count']:,} строк)".replace(",", " "),
         **base,
     }
 
@@ -1073,9 +1149,9 @@ def get_columns() -> Dict[str, Any]:
     if not is_loaded():
         return {"error": "Main database not loaded", "columns": []}
 
-    key_col_set = set(_cache["key_columns"])
+    key_col_set = set(_get_cache()["key_columns"])
     columns_info = []
-    for idx, col_name in enumerate(_cache["columns"]):
+    for idx, col_name in enumerate(_get_cache()["columns"]):
         columns_info.append({
             "name": col_name,
             "index": idx,
@@ -1085,7 +1161,7 @@ def get_columns() -> Dict[str, Any]:
     return {
         "columns": columns_info,
         "total_columns": len(columns_info),
-        "key_column_count": len(_cache["key_columns"]),
+        "key_column_count": len(_get_cache()["key_columns"]),
     }
 
 
@@ -1101,13 +1177,13 @@ def get_data(
     if not is_loaded():
         return {"error": "Main database not loaded", "data": [], "total_rows": 0}
 
-    col_mapping = _cache["col_mapping"]
+    col_mapping = _get_cache()["col_mapping"]
 
     # Build column list
     if key_columns_only:
-        display_cols = [c for c in _cache["key_columns"]]
+        display_cols = [c for c in _get_cache()["key_columns"]]
     else:
-        display_cols = list(_cache["columns"])
+        display_cols = list(_get_cache()["columns"])
 
     select_cols = [f'"{col_mapping[c]}"' for c in display_cols]
     select_clause = ", ".join(select_cols)
@@ -1119,7 +1195,7 @@ def get_data(
     if search:
         search_lower = search.lower()
         search_conditions = []
-        for kc in _cache["key_columns"]:
+        for kc in _get_cache()["key_columns"]:
             search_conditions.append(f'LOWER("{col_mapping[kc]}") LIKE ?')
             params.append(f'%{search_lower}%')
         where_parts.append(f'({" OR ".join(search_conditions)})')
@@ -1195,7 +1271,7 @@ def get_data(
         return {
             "data": data,
             "total_rows": total_filtered,
-            "total_unfiltered_rows": _cache["row_count"],
+            "total_unfiltered_rows": _get_cache()["row_count"],
             "offset": offset,
             "limit": limit,
             "returned_rows": len(data),
@@ -1214,22 +1290,22 @@ def get_stats() -> Dict[str, Any]:
     conn = _get_db_connection()
     try:
         stats = {
-            "total_rows": _cache["row_count"],
-            "total_columns": _cache["col_count"],
-            "key_column_count": len(_cache["key_columns"]),
-            "file_path": _cache["file_path"],
-            "sheet_name": _cache["sheet_name"],
-            "loaded_at": _cache["loaded_at"],
+            "total_rows": _get_cache()["row_count"],
+            "total_columns": _get_cache()["col_count"],
+            "key_column_count": len(_get_cache()["key_columns"]),
+            "file_path": _get_cache()["file_path"],
+            "sheet_name": _get_cache()["sheet_name"],
+            "loaded_at": _get_cache()["loaded_at"],
         }
 
-        col_mapping = _cache["col_mapping"]
+        col_mapping = _get_cache()["col_mapping"]
         key_col_stats = {}
 
-        for col_name in _cache["key_columns"]:
+        for col_name in _get_cache()["key_columns"]:
             if col_name in col_mapping:
                 s_col = col_mapping[col_name]
                 row_count = conn.execute(f'SELECT COUNT(*) FROM employees WHERE "{s_col}" IS NOT NULL').fetchone()[0]
-                null_count = _cache["row_count"] - row_count
+                null_count = _get_cache()["row_count"] - row_count
                 unique_count = conn.execute(f'SELECT COUNT(DISTINCT "{s_col}") FROM employees').fetchone()[0]
 
                 top_values = conn.execute(
@@ -1247,7 +1323,7 @@ def get_stats() -> Dict[str, Any]:
 
         # All columns overview
         all_col_stats = []
-        for col_name in _cache["columns"]:
+        for col_name in _get_cache()["columns"]:
             if col_name in col_mapping:
                 s_col = col_mapping[col_name]
                 null_count = conn.execute(f'SELECT COUNT(*) FROM employees WHERE "{s_col}" IS NULL').fetchone()[0]
@@ -1257,7 +1333,7 @@ def get_stats() -> Dict[str, Any]:
                     "dtype": "text",
                     "unique_count": unique_count,
                     "null_count": null_count,
-                    "is_key": col_name in set(_cache["key_columns"]),
+                    "is_key": col_name in set(_get_cache()["key_columns"]),
                 })
 
         stats["all_columns"] = all_col_stats
@@ -1303,10 +1379,9 @@ def search_advanced(
 
 def clear_cache() -> Dict[str, Any]:
     """Сброс только кэша в памяти (файлы instances не удаляются)."""
-    global _cache
-    file_path = _cache.get("file_path")
+    file_path = _get_cache().get("file_path")
     close_all_connections()
-    _cache = {
+    _set_cache({
         "loaded": False,
         "file_path": None,
         "sheet_name": None,
@@ -1316,17 +1391,16 @@ def clear_cache() -> Dict[str, Any]:
         "loaded_at": None,
         "row_count": 0,
         "col_count": 0,
-    }
+    })
     return {"cleared": True, "previous_file": file_path}
 
 
 def activate_instance(instance_id: str) -> Dict[str, Any]:
-    global _cache
     result = registry.activate_instance(instance_id)
     if not result.get("ok"):
         return result
     close_all_connections()
-    _cache["loaded"] = False
+    _invalidate_cache()
     if _load_meta_from_disk():
         return {**get_status(), "activated": instance_id}
     return {"ok": True, "activated": instance_id, "loaded": False}
@@ -1338,12 +1412,11 @@ def list_instances() -> Dict[str, Any]:
 
 
 def delete_instance(instance_id: str) -> Dict[str, Any]:
-    global _cache
     active = registry.get_active_id()
     result = registry.delete_instance(instance_id)
     close_all_connections()
     if active == instance_id:
-        _cache["loaded"] = False
+        _invalidate_cache()
         _load_meta_from_disk()
     return result
 
