@@ -45,10 +45,9 @@ function buildMonthCells(view: Date, today: Date) {
 
 export default function WelcomeDateTimePanel({ className = '' }: { className?: string }) {
   // 1. Сначала объявляем все состояния
-  const [now, setNow] = useState<Date | null>(() => new Date())
+  const [now, setNow] = useState<Date>(new Date())
   const [isMounted, setIsMounted] = useState(false)
 
-  // 2. Затем эффекты
   useEffect(() => {
     setIsMounted(true)
     const id = window.setInterval(() => setNow(new Date()), 1000)
@@ -56,8 +55,7 @@ export default function WelcomeDateTimePanel({ className = '' }: { className?: s
   }, [])
 
   // 3. Затем useMemo и другие вычисления (они должны быть всегда!)
-  // Если now еще null (при первой отрисовке), используем заглушку, чтобы useMemo не упал
-  const safeNow = now || new Date()
+  const safeNow = now
   
   const monthCells = useMemo(() => buildMonthCells(safeNow, safeNow), [safeNow])
   const monthTitle = `${MONTH_NAMES[safeNow.getMonth()]} ${safeNow.getFullYear()}`
