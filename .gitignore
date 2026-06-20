@@ -1,1 +1,6 @@
-Nothing needs to be added to the .gitignore file based on the provided changes, as they only include source/config files (.github/workflows/ci.yml and mini-services/excel-service/app.py).
+```
+# Configuration and workflow files
+!.github/workflows/
+
+# Preserve existing rules
+```
