@@ -4,9 +4,9 @@ from __future__ import annotations
 import os
 import threading
 import uuid
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, Future
 from datetime import datetime, timezone
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, Optional, Set
 
 from logger_config import get_logger
 
@@ -15,6 +15,8 @@ logger = get_logger("task_queue")
 _executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="omik-job")
 _lock = threading.Lock()
 _jobs: Dict[str, Dict[str, Any]] = {}
+_cancelled_jobs: Set[str] = set()
+_job_futures: Dict[str, Future] = {}
 
 _CELERY_STATE = {
     "PENDING": "queued",
@@ -77,6 +79,15 @@ def submit_job(name: str, func: Callable[..., Any], /, *args: Any, **kwargs: Any
             with _lock:
                 rec = _jobs.get(job_id)
                 if rec:
+                    # Check if cancelled while running
+                    if job_id in _cancelled_jobs:
+                        rec["status"] = "error"
+                        rec["error"] = "Cancelled by user"
+                        rec["finished_at"] = _utc_now()
+                        rec["phase"] = "cancelled"
+                        rec["progress_detail"] = "Отменено пользователем"
+                        logger.info(f"Job {job_id} was cancelled")
+                        return
                     rec["status"] = "done"
                     rec["result"] = result
                     rec["finished_at"] = _utc_now()
@@ -89,8 +100,13 @@ def submit_job(name: str, func: Callable[..., Any], /, *args: Any, **kwargs: Any
                     rec["status"] = "error"
                     rec["error"] = str(exc)
                     rec["finished_at"] = _utc_now()
+        finally:
+            with _lock:
+                _job_futures.pop(job_id, None)
 
-    _executor.submit(_run)
+    future = _executor.submit(_run)
+    with _lock:
+        _job_futures[job_id] = future
     return job_id
 
 
@@ -284,3 +300,27 @@ def get_job(job_id: str) -> Optional[Dict[str, Any]]:
     if celery_rec and celery_rec.get("backend") == "celery":
         return celery_rec
     return None
+
+
+def cancel_job(job_id: str) -> Optional[Dict[str, Any]]:
+    """Cancel a running background job. Returns status info or None if not found."""
+    with _lock:
+        rec = _jobs.get(job_id)
+        if not rec:
+            # Check if it's already completed/removed
+            return None
+        if rec["status"] in ("done", "error"):
+            return {"status": rec["status"], "message": "Job already completed"}
+        
+        # Mark as cancelled and try to cancel the future
+        _cancelled_jobs.add(job_id)
+        future = _job_futures.get(job_id)
+        if future:
+            future.cancel()
+        
+        rec["status"] = "error"
+        rec["error"] = "Cancelled by user"
+        rec["finished_at"] = _utc_now()
+        rec["phase"] = "cancelled"
+        rec["progress_detail"] = "Отменено пользователем"
+        return {"status": "cancelled", "job_id": job_id}
