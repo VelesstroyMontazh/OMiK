@@ -38,10 +38,44 @@ import tickets_db
 import vba_lab
 import welcome_settings
 from auth_middleware import ApiTokenMiddleware
+from data_paths import UPLOAD_DIR
 from routers import include_routers
 
 # Maximum file upload size: 100 MB
 MAX_FILE_SIZE = 100 * 1024 * 1024
+
+# Allowed base directories for file operations (security)
+ALLOWED_BASE_DIRS = [
+    os.path.abspath(UPLOAD_DIR),
+    os.path.abspath(excel_handler.UPLOAD_DIR),
+]
+
+
+def safe_resolve_path(user_path: str, allowed_bases: Optional[List[str]] = None) -> str:
+    """
+    Безопасно разрешает путь, проверяя что он находится внутри разрешённых директорий.
+    Защищает от Path Traversal атак (../../../etc/passwd).
+    """
+    if allowed_bases is None:
+        allowed_bases = ALLOWED_BASE_DIRS
+    
+    # Resolve to absolute path
+    resolved = Path(user_path).resolve()
+    
+    # Check against all allowed base directories
+    for base in allowed_bases:
+        try:
+            base_resolved = Path(base).resolve()
+            resolved.relative_to(base_resolved)
+            return str(resolved)
+        except ValueError:
+            continue
+    
+    # Path is not within any allowed directory
+    raise HTTPException(
+        status_code=403, 
+        detail="Доступ запрещён: путь вне разрешённой директории"
+    )
 
 app = FastAPI(
     title="Excel Processing Service",
