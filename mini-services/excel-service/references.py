@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import bcrypt
 import json
 import os
 import re
@@ -133,9 +134,12 @@ def _read_login_file(path: str) -> Tuple[List[Dict[str, Any]], Dict[str, str]]:
     role = "admin" if login.lower() in ("admin", "админ") else (
       "cok" if login.lower() in ("цок", "cok") else "user"
     )
+    # Check if password is already hashed (bcrypt hashes start with $2)
+    is_hashed = password.startswith("$2") if password else False
     users.append({
       "login": login,
       "password": password,
+      "password_hashed": is_hashed,
       "sites": sites,
       "role": role,
       "status": status,
@@ -349,8 +353,24 @@ def get_users() -> List[Dict[str, Any]]:
 def verify_user(login: str, password: str) -> Optional[Dict[str, Any]]:
     login_n = login.strip().lower()
     for u in get_users():
-        if u.get("login", "").strip().lower() == login_n and u.get("password") == password:
-            return u
+        if u.get("login", "").strip().lower() != login_n:
+            continue
+        stored_password = u.get("password", "")
+        is_hashed = u.get("password_hashed", False)
+        
+        # If password is hashed, use bcrypt to verify
+        if is_hashed and stored_password.startswith("$2"):
+            try:
+                if bcrypt.checkpw(password.encode(), stored_password.encode()):
+                    return u
+            except (ValueError, TypeError):
+                # Fallback for invalid hash format
+                if stored_password == password:
+                    return u
+        else:
+            # Plain text password (legacy or new entry not yet hashed)
+            if stored_password == password:
+                return u
     return None
 
 

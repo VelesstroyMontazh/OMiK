@@ -7,6 +7,7 @@ import asyncio
 import os
 import sys
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from fastapi import FastAPI, UploadFile, File, HTTPException, Query
@@ -38,6 +39,9 @@ import vba_lab
 import welcome_settings
 from auth_middleware import ApiTokenMiddleware
 from routers import include_routers
+
+# Maximum file upload size: 100 MB
+MAX_FILE_SIZE = 100 * 1024 * 1024
 
 app = FastAPI(
     title="Excel Processing Service",
@@ -179,26 +183,6 @@ class MacroExecuteRequest(BaseModel):
     file_path: str
     macro_code: str
     language: str = "vba"
-
-class VbaLabImportRequest(BaseModel):
-    file_path: str
-    macro_names: Optional[List[str]] = None
-    source_label: Optional[str] = None
-
-class VbaLabUpdateRequest(BaseModel):
-    name: Optional[str] = None
-    code: Optional[str] = None
-    language: Optional[str] = None
-
-class VbaLabImportRequest(BaseModel):
-    file_path: str
-    macro_names: Optional[List[str]] = None
-    source_label: Optional[str] = None
-
-class VbaLabUpdateRequest(BaseModel):
-    name: Optional[str] = None
-    code: Optional[str] = None
-    language: Optional[str] = None
 
 class VbaLabImportRequest(BaseModel):
     file_path: str
@@ -528,8 +512,16 @@ async def upload_file(file: UploadFile = File(...)):
 
     try:
         content = await file.read()
+        # Check file size limit (100 MB)
+        if len(content) > MAX_FILE_SIZE:
+            raise HTTPException(
+                status_code=413, 
+                detail=f"Файл слишком большой. Максимум {MAX_FILE_SIZE // (1024*1024)} MB"
+            )
         result = await run_blocking(excel_handler.save_uploaded_file, content, file.filename)
         return result
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

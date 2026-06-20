@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 
 BASE = os.environ.get("EXCEL_BACKEND_URL", "http://127.0.0.1:3031").rstrip("/")
-DEFAULT_FILE = Path(r"C:\Otchet_OP_Marina\ВСМ_билеты_с 01.01.2025.xlsm")
+DEFAULT_FILE = Path(__file__).parent / "fixtures" / "test_tickets.xlsm"
 TEST_FILE = Path(os.environ.get("OMIK_E2E_TICKET_FILE", str(DEFAULT_FILE)))
 REGISTRY = os.environ.get("OMIK_E2E_REGISTRY", "vsm")
 POLL_SEC = int(os.environ.get("OMIK_E2E_POLL_SEC", "600"))

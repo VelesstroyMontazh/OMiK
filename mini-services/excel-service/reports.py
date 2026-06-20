@@ -15,14 +15,32 @@ from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 
 from calendar_db import CALENDAR_EXPORT_COLUMNS
-
-from calendar_db import CALENDAR_EXPORT_COLUMNS
 from data_paths import UPLOAD_DIR
 import main_db
 
 MAIN_DB_PATH = main_db.DB_PATH
 MAIN_META_PATH = main_db.META_PATH
 CALENDAR_DB_PATH = os.path.join(UPLOAD_DIR, "calendar_db.sqlite")
+
+# Allowed column names for SQL queries to prevent SQL injection
+ALLOWED_MAIN_DB_COLUMNS = {
+    "Дата приема", "Дата_приема", "Дата увольнения", "Дата_увольнения",
+    "Состояние", "Страна гражданства", "Страна_гражданства",
+    "Площадка", "Итого", "Территория", "Организация",
+    "Подразделение", "Должность", "ФИО", "rowid"
+}
+
+ALLOWED_CALENDAR_COLUMNS = {
+    "year", "month", "direction", "citizenship", "arrival_status",
+    "justification", "department", "worker_type", "row_number",
+    "date", "merged_row_id"
+}
+
+def _safe_column_name(name: str, allowed: set) -> str:
+    """Validate column name against whitelist to prevent SQL injection."""
+    if name not in allowed:
+        raise ValueError(f"Недопустимое имя колонки: {name}")
+    return name
 
 
 def _safe_int(val, default=None):

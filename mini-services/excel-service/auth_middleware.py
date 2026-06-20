@@ -1,6 +1,7 @@
 """Optional API token for excel-service (OMIK_API_SECRET)."""
 from __future__ import annotations
 
+import hmac
 import os
 
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -20,6 +21,7 @@ class ApiTokenMiddleware(BaseHTTPMiddleware):
             if auth.lower().startswith("bearer "):
                 token = auth[7:].strip()
 
-        if token != secret:
+        # Use constant-time comparison to prevent timing attacks
+        if not hmac.compare_digest(token.encode(), secret.encode()):
             return JSONResponse({"detail": "Unauthorized"}, status_code=401)
         return await call_next(request)
