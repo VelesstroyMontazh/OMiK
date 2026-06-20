@@ -1,6 +1,89 @@
-```
 # Configuration and workflow files
 !.github/workflows/
 
-# Preserve existing rules
-```
+# Environment variables
+.env.local
+.env*.local
+
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build outputs
+.next/
+out/
+build/
+dist/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Runtime data
+pids/
+*.pid
+*.seed
+*.pid.lock
+
+# Directory for instrumented coverage
+coverage/
+
+# TypeScript cache
+*.tsbuildinfo
+
+# Next.js cache
+.cache/
+
+# Misc
+.DS_Store
+*.pem
+
+# Debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Local env files
+.env*.local
+.env
+
+# Vercel
+.vercel
+
+# Testing
+playwright-report/
+test-results/
+
+# Sensitive files
+*.xlsx
+*.xls
+ЛОГ_ЧАТА.txt
+*password*
+*secret*
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+.venv
+pip-log.txt
+pip-delete-this-directory.txt
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+Thumbs.db
