@@ -8,6 +8,10 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, Optional
 
+from logger_config import get_logger
+
+logger = get_logger("task_queue")
+
 _executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="omik-job")
 _lock = threading.Lock()
 _jobs: Dict[str, Dict[str, Any]] = {}
@@ -62,6 +66,7 @@ def submit_job(name: str, func: Callable[..., Any], /, *args: Any, **kwargs: Any
         }
 
     def _run() -> None:
+        logger.info(f"Job {job_id} started: {name}")
         with _lock:
             rec = _jobs.get(job_id)
             if rec:
@@ -75,7 +80,9 @@ def submit_job(name: str, func: Callable[..., Any], /, *args: Any, **kwargs: Any
                     rec["status"] = "done"
                     rec["result"] = result
                     rec["finished_at"] = _utc_now()
+            logger.info(f"Job {job_id} completed successfully")
         except Exception as exc:
+            logger.error(f"Job {job_id} failed: {exc}", exc_info=True)
             with _lock:
                 rec = _jobs.get(job_id)
                 if rec:
@@ -168,6 +175,7 @@ def submit_tickets_costs_pipeline(
         return out
 
     def _run() -> None:
+        logger.info(f"Pipeline job {job_id} started")
         with _lock:
             rec = _jobs.get(job_id)
             if rec:
@@ -183,7 +191,9 @@ def submit_tickets_costs_pipeline(
                     rec["finished_at"] = _utc_now()
                     rec["phase"] = "done"
                     rec["progress_detail"] = "Готово"
+            logger.info(f"Pipeline job {job_id} completed successfully")
         except Exception as exc:
+            logger.error(f"Pipeline job {job_id} failed: {exc}", exc_info=True)
             with _lock:
                 rec = _jobs.get(job_id)
                 if rec:

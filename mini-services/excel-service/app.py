@@ -39,7 +39,13 @@ import welcome_settings
 from auth_middleware import ApiTokenMiddleware
 from routers import include_routers
 
-app = FastAPI(title="Excel Processing Service", version="1.0.0")
+app = FastAPI(
+    title="Excel Processing Service",
+    version="1.0.0",
+    docs_url="/docs",
+    redoc_url="/redoc",
+    openapi_url="/openapi.json"
+)
 
 # Initialize rate limiter
 rate_limiter = SlowAPI(limiter_key_func=get_remote_address)
@@ -326,7 +332,7 @@ class CalendarMainMergeRequest(BaseModel):
 
 
 # =============================================================================
-# Health Check
+# Health Check & Metrics
 # =============================================================================
 
 @app.get("/api/health")
@@ -343,6 +349,117 @@ async def health_check():
         "upload_dir": UPLOAD_DIR,
         "upload_dir_ready": upload_ok,
     }
+
+
+@app.get("/api/metrics/memory")
+async def memory_metrics():
+    """Memory usage metrics using psutil."""
+    try:
+        import psutil
+        
+        process = psutil.Process(os.getpid())
+        mem_info = process.memory_info()
+        
+        return {
+            "status": "ok",
+            "memory": {
+                "rss_mb": round(mem_info.rss / (1024 * 1024), 2),
+                "vms_mb": round(mem_info.vms / (1024 * 1024), 2),
+                "percent": round(process.memory_percent(), 2),
+            },
+            "system": {
+                "total_mb": round(psutil.virtual_memory().total / (1024 * 1024), 2),
+                "available_mb": round(psutil.virtual_memory().available / (1024 * 1024), 2),
+                "percent_used": round(psutil.virtual_memory().percent, 2),
+            }
+        }
+    except ImportError:
+        raise HTTPException(status_code=503, detail="psutil not installed")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/metrics/system")
+async def system_metrics():
+    """System resource metrics using psutil."""
+    try:
+        import psutil
+        
+        return {
+            "status": "ok",
+            "cpu": {
+                "percent": psutil.cpu_percent(interval=0.1),
+                "count_physical": psutil.cpu_count(logical=False),
+                "count_logical": psutil.cpu_count(logical=True),
+            },
+            "disk": {
+                "total_gb": round(psutil.disk_usage('/').total / (1024**3), 2),
+                "used_gb": round(psutil.disk_usage('/').used / (1024**3), 2),
+                "percent": psutil.disk_usage('/').percent,
+            },
+            "process": {
+                "pid": os.getpid(),
+                "threads": psutil.Process(os.getpid()).num_threads(),
+                "open_files": len(psutil.Process(os.getpid()).open_files()),
+            }
+        }
+    except ImportError:
+        raise HTTPException(status_code=503, detail="psutil not installed")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =============================================================================
+# Database Backup API
+# =============================================================================
+
+@app.post("/api/db/backup")
+async def run_db_backup():
+    """Trigger manual database backup."""
+    try:
+        from db_backup import run_scheduled_backup
+        result = run_scheduled_backup()
+        return {"status": "ok", "backup": result}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/db/backups")
+async def list_db_backups():
+    """List all available database backups."""
+    try:
+        from db_backup import list_backups
+        backups = list_backups()
+        return {"status": "ok", "backups": backups}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/api/db/backup/{backup_filename}")
+async def delete_db_backup(backup_filename: str):
+    """Delete a specific backup file."""
+    try:
+        from db_backup import BACKUP_DIR
+        from pathlib import Path
+        
+        backup_path = BACKUP_DIR / backup_filename
+        
+        # Security check: ensure path is within BACKUP_DIR
+        try:
+            backup_path.resolve().relative_to(BACKUP_DIR.resolve())
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid backup filename")
+        
+        if not backup_path.exists():
+            raise HTTPException(status_code=404, detail="Backup not found")
+        
+        backup_path.unlink()
+        return {"status": "ok", "deleted": backup_filename}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 
 # =============================================================================
