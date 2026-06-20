@@ -13,6 +13,9 @@ from fastapi import FastAPI, UploadFile, File, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
+from slowapi import SlowAPI, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
 
 # Add current directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -37,6 +40,11 @@ from auth_middleware import ApiTokenMiddleware
 from routers import include_routers
 
 app = FastAPI(title="Excel Processing Service", version="1.0.0")
+
+# Initialize rate limiter
+rate_limiter = SlowAPI(limiter_key_func=get_remote_address)
+app.state.limiter = rate_limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 
 async def run_blocking(func: Callable[..., Any], /, *args: Any, **kwargs: Any) -> Any:
@@ -322,6 +330,7 @@ class CalendarMainMergeRequest(BaseModel):
 # =============================================================================
 
 @app.get("/api/health")
+@rate_limiter.limit("60/minute")  # Rate limit: 60 requests per minute
 async def health_check():
     """Liveness: быстрый ответ без блокировки на тяжёлых задачах."""
     from data_paths import UPLOAD_DIR
@@ -391,6 +400,7 @@ async def xlwings_read_range(request: XlwingsReadRequest):
 # =============================================================================
 
 @app.post("/api/upload")
+@rate_limiter.limit("10/minute")  # Rate limit: 10 uploads per minute to prevent abuse
 async def upload_file(file: UploadFile = File(...)):
     """Upload an Excel file, save to upload directory, return file info with sheets list."""
     if not excel_handler.is_excel_file(file.filename):

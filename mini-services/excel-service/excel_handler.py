@@ -48,6 +48,45 @@ def get_file_extension(filename: str) -> str:
     return os.path.splitext(filename)[1].lower()
 
 
+def validate_file_by_magic_bytes(content: bytes, filename: str) -> bool:
+    """Validate file format by checking magic bytes (file signatures)."""
+    ext = get_file_extension(filename).lower()
+    
+    # Magic bytes signatures for Excel formats
+    magic_signatures = {
+        '.xlsx': [b'PK\x03\x04'],  # ZIP-based (Office Open XML)
+        '.xlsm': [b'PK\x03\x04'],  # ZIP-based with macros
+        '.xlsb': [b'PK\x03\x04'],  # ZIP-based binary
+        '.xls': [b'\xD0\xCF\x11\xE0', b'\x09\x08\x10\x00'],  # OLE CF or BIFF5
+        '.csv': [None],  # Text format, no magic bytes
+        '.tsv': [None],  # Text format, no magic bytes
+    }
+    
+    if ext not in magic_signatures:
+        return False
+    
+    expected_signatures = magic_signatures[ext]
+    
+    # For text formats (CSV/TSV), just check if content is valid text
+    if expected_signatures == [None]:
+        try:
+            content.decode('utf-8')
+            return True
+        except UnicodeDecodeError:
+            try:
+                content.decode('latin-1')
+                return True
+            except:
+                return False
+    
+    # Check magic bytes for binary formats
+    for signature in expected_signatures:
+        if content.startswith(signature):
+            return True
+    
+    return False
+
+
 def is_excel_file(filename: str) -> bool:
     """Check if a file is a supported Excel format."""
     ext = get_file_extension(filename)
@@ -55,7 +94,14 @@ def is_excel_file(filename: str) -> bool:
 
 
 def save_uploaded_file(file_content: bytes, original_filename: str) -> Dict[str, Any]:
-    """Save an uploaded file and return file metadata."""
+    """Save an uploaded file and return file metadata with magic bytes validation."""
+    # Validate file by magic bytes before saving
+    if not validate_file_by_magic_bytes(file_content, original_filename):
+        raise ValueError(
+            f"File format validation failed for '{original_filename}'. "
+            "The file content does not match the expected format signature."
+        )
+    
     ensure_upload_dir()
     file_id = generate_file_id()
     ext = get_file_extension(original_filename)
@@ -81,6 +127,7 @@ def save_uploaded_file(file_content: bytes, original_filename: str) -> Dict[str,
         "extension": ext,
         "sheets": sheets,
         "upload_time": datetime.now().isoformat(),
+        "magic_bytes_validated": True,
     }
 
 

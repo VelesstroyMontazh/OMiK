@@ -20,3 +20,4 @@ xlwings>=0.30.0; sys_platform == "win32"
 rapidfuzz>=3.0.0
 oletools>=0.60.0
 python-calamine>=0.2.0
+slowapi>=0.1.9
