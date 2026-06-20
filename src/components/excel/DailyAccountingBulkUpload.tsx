@@ -80,11 +80,14 @@ export default function DailyAccountingBulkUpload({
   )
 
   useEffect(() => {
-    if (open) {
+    if (!open) return
+    // Schedule initialization after mount to avoid cascading renders
+    const id = requestAnimationFrame(() => {
       setBulkDate(defaultDate)
       setEntries([])
       setUploading(false)
-    }
+    })
+    return () => cancelAnimationFrame(id)
   }, [open, defaultDate])
 
   const onFiles = (files: FileList | null) => {

@@ -9,8 +9,12 @@ export function useAppUser() {
   const [ready, setReady] = useState(false)
 
   useEffect(() => {
-    setUserState(getAppUser())
-    setReady(true)
+    // Schedule after mount to avoid setState in effect body directly
+    const id = requestAnimationFrame(() => {
+      setUserState(getAppUser())
+      setReady(true)
+    })
+    return () => cancelAnimationFrame(id)
   }, [])
 
   const setUser = (next: AppUser | null) => {

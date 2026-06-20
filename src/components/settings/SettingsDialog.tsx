@@ -32,12 +32,15 @@ export default function SettingsDialog({ open, onOpenChange }: Props) {
   const [tab, setTab] = useState<SettingsTab>('base')
 
   useEffect(() => {
-    if (open) {
+    if (!open) return
+    // Schedule initialization after mount to avoid cascading renders
+    const id = requestAnimationFrame(() => {
       setAuthed(isSettingsAuthenticated())
       setPassword('')
       setError('')
       setTab('base')
-    }
+    })
+    return () => cancelAnimationFrame(id)
   }, [open])
 
   const handleLogin = (e: React.FormEvent) => {
