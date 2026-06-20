@@ -1,35 +1,5 @@
 ```
-# Dependencies
-.venv/
-venv/
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
-node_modules/
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-
-# Environment variables
-.env
-.env.local
-.env.*
-
-# IDE specific
-.vscode/
-.idea/
-*.swp
-*.swo
-
-# Logs
-*.log
-
-# OS generated
-.DS_Store
-Thumbs.db
-
-# Python specific
+# Python
 __pycache__/
 *.py[cod]
 *$py.class
@@ -51,13 +21,53 @@ wheels/
 .installed.cfg
 *.egg
 
-# Excel files (if they're generated/temporary)
-*.xlsx
-*.xls
+# Virtual environments
+venv/
+ENV/
+env.bak/
+.venv/
+env/
+ENV/
 
-# Coverage reports
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log
+
+# Environment variables
+.env
+.env.local
+*.env.*
+
+# Coverage
 .coverage
 htmlcov/
 .coverage.*
-.coverage.xml
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+
+# Temporary files
+*.tmp
+*~
+.DS_Store
+Thumbs.db
+
+# MyPy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Pytest
+.pytest_cache/
+
+# Build systems
+target/
+.gradle/
 ```
