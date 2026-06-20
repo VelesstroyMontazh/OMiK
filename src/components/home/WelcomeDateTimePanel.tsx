@@ -45,14 +45,12 @@ function buildMonthCells(view: Date, today: Date) {
 
 export default function WelcomeDateTimePanel({ className = '' }: { className?: string }) {
   // 1. Сначала объявляем все состояния
-  const [now, setNow] = useState<Date | null>(null)
+  const [now, setNow] = useState<Date | null>(() => new Date())
   const [isMounted, setIsMounted] = useState(false)
 
   // 2. Затем эффекты
   useEffect(() => {
-    setNow(new Date())
     setIsMounted(true)
-    
     const id = window.setInterval(() => setNow(new Date()), 1000)
     return () => window.clearInterval(id)
   }, [])
